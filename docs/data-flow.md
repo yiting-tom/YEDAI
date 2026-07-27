@@ -91,7 +91,8 @@ flowchart TB
 ### 索引裡有什麼、沒有什麼
 
 **有**：`DocMeta`（id / bundle / type / title / description / path / tags / timestamp）、
-詞頻與欄位長度統計、實體權重、`by_id`、`bundle_roots`、`CorpusStats`。
+詞頻與欄位長度統計、實體權重、`by_id`、`bundle_roots`、關聯邊
+（`related_out` / `related_in` / `dangling`）、`CorpusStats`。
 
 **沒有**：**任何 concept 的 body 內容**。全文於請求時從磁碟讀（見下方階段三）。
 這由測試強制守住：`tests/test_fulltext.py::test_index_does_not_contain_body`
@@ -219,6 +220,38 @@ flowchart TB
 
 ---
 
+## Level 1 — 階段四：關聯展開與限定範圍搜尋
+
+```mermaid
+flowchart TB
+  subgraph NB["neighbors — 沿 related 展開"]
+    N0(["concept_id + depth + direction"]) --> N1{"index.by_id 存在？"}
+    N1 -->|否| N404(["404"])
+    N1 --> N2["BFS：related_out / related_in<br/>逐跳擴散、記錄 depth 與 via"]
+    N2 --> N3["排除起點自身與已訪節點"]
+    N3 --> N4(["摘要清單 + dangling 懸空引用"])
+  end
+
+  subgraph GP["grep — 限定範圍字面搜尋"]
+    G0(["pattern + bundle_ids / concept_ids"]) --> G1{"有範圍嗎？"}
+    G1 -->|否| G422(["422<br/>訊息指引先用 search 縮範圍"])
+    G1 --> G2{"範圍存在於索引？"}
+    G2 -->|否| G404(["404"])
+    G2 --> G3["展開為 concept 清單"]
+    G3 --> G4["逐檔 resolve_path → 讀磁碟<br/>檔案缺失則略過並繼續"]
+    G4 --> G5["逐行比對<br/>字面（預設）或正則（需開啟）"]
+    G5 --> G6(["命中清單 + truncated 標記"])
+  end
+```
+
+**關聯邊在建索引時就算好**（`_build_related_edges`，`index.py`）。出向直接來自
+frontmatter 的 `related`；入向需要等全部 concept 掃完才能算——否則前向引用會被誤判成懸空。
+
+**`grep` 的範圍是必填而非選填**。這不是效能保護，是設計意圖的強制執行：允許無範圍
+grep 等於留一條繞過檢索層的退路，那會讓整套系統回到原點。
+
+---
+
 ## 完整迴路
 
 ```mermaid
@@ -283,14 +316,17 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 
 ## 目前流程的缺口
 
-已補：`/concept/{id}` 讓 agent 拿得到全文。
+**取用迴路已完整。** agent 可以走完 search → get_concepts → neighbors → grep 一整輪，
+兩種介面（HTTP 與 MCP）共用同一份核心實作。工具用法見 [agent-tools.md](./agent-tools.md)。
 
-尚未實作（後續變更）：
+尚未實作：
 
 | 缺口 | 影響 |
 |---|---|
-| 批次取全文 | agent 一次要讀 3~7 份，目前得逐筆 round trip |
-| `neighbors`（沿 `related` 展開） | 無法重現 agent 目前用 `related` 跳轉的行為 |
-| 限定範圍 `grep` | 範圍縮小後無法恢復原本有效的 agentic file search |
-| MCP server | claude-agent-sdk 目前得自行包 HTTP 工具定義 |
-| 三欄並排 Web UI | Swagger 無法收集點選資料，`/feedback` 實際上沒人會用 |
+| **三欄並排 Web UI** | Swagger 沒有可點的結果列表，`/feedback` 實際上收不到人的點選資料——而那是最有價值的隱性相關性標註 |
+| 寫入路徑（propose / amend / retire） | agent 只能讀，無法把發現回饋成新的 concept |
+| `neighbors` 依 type 過濾 | 高連通度語料上兩跳可能回傳過多 |
+| 結果快取 | 每次 `grep` 都重讀磁碟；本規模下不構成瓶頸 |
+
+其中 **Web UI 是目前唯一擋住資料收集的缺口**：量測迴路（三模式、重疊度、報告）全部就緒，
+但沒有工程師會在 Swagger 上手動貼 `concept_id` 送 `/feedback`。

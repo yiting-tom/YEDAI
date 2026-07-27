@@ -4,6 +4,7 @@
 |---|---|
 | [data-flow.md](./data-flow.md) | 資料流圖（DFD）：離線建索引、線上查詢、取回全文、遙測四條路徑，含計分公式與資料存放位置 |
 | [indexing.md](./indexing.md) | 如何建立索引：語料目錄格式、設定、實體字典、統計數字怎麼看、何時必須重建、疑難排解 |
+| [agent-tools.md](./agent-tools.md) | 六個 agent 工具、建議流程、MCP 與 HTTP 兩種接法、常見誤用 |
 
 專案總覽、安裝與報告判讀方式在根目錄的 [README.md](../README.md)。
 

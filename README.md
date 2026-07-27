@@ -29,6 +29,7 @@
 |---|---|
 | [docs/data-flow.md](docs/data-flow.md) | 資料流圖（DFD）+ 計分公式 + 資料存放位置 |
 | [docs/indexing.md](docs/indexing.md) | 如何建立索引、統計數字怎麼看、何時必須重建 |
+| [docs/agent-tools.md](docs/agent-tools.md) | 六個 agent 工具、建議流程、MCP 接法、常見誤用 |
 | [openspec/specs/](openspec/specs/) | 規格（需求與情境） |
 
 ## 安裝
@@ -72,29 +73,63 @@ uv run yedai serve -c config.local.yaml
 |---|---|
 | `GET /search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`（三模式並排）。**只回 header 菜單，不回內容** |
 | `GET /concept/{concept_id}` | 取回單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
+| `POST /concepts` | 批次取全文（最多 50 筆，部分成功語意） |
+| `GET /concept/{concept_id}/neighbors` | 沿 `related` 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
+| `GET /grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
 | `POST /feedback` | 記錄點選；`query_id` 來自 `/search` 回應 |
 | `GET /stats` | 語料統計與索引狀態 |
 | `GET /report` | 去識別化統計報告 |
 | `GET /healthz` | 健康檢查 |
 
-### Agent 的使用流程
+## 給 Agent 用（MCP）
 
-```
-query → /search  → header 菜單（index.md 行格式）
-                 → agent 自行挑 3~7 筆
-                 → /concept/{id} 逐一取全文
-                 → 作答
+```bash
+uv run yedai mcp -c config.local.yaml
 ```
 
-**`/search` 刻意不回傳內容片段。** 回一份菜單、讓 agent 自己決定讀哪幾份全文，
-才保得住「agent 當 reranker、讀完整文件」這個讓小規模 agentic file search 效果好的性質。
+claude-agent-sdk / Claude Code 的設定：
+
+```json
+{
+  "mcpServers": {
+    "yedai": {
+      "command": "uv",
+      "args": ["run", "yedai", "mcp", "-c", "config.local.yaml"],
+      "cwd": "/path/to/YEDAI"
+    }
+  }
+}
+```
+
+六個工具：`search`、`get_concept`、`get_concepts`、`neighbors`、`grep`、`stats`。
+細節與常見誤用見 [docs/agent-tools.md](docs/agent-tools.md)。
+
+### 建議流程
+
+```
+search（縮範圍、取菜單）
+  └─ 挑 3~7 筆
+       └─ get_concepts（批次取全文）
+            ├─ neighbors（沿 related 展開，尤其 direction=in）
+            └─ grep（在 search 給的 bundle_id 範圍內做字面搜尋）
+```
+
+### 兩個刻意的限制
+
+**`search` 不回內容，只回菜單。** 讓 agent 自己決定讀哪幾份全文，才保得住
+「agent 當 reranker、讀完整文件」這個讓小規模 agentic file search 效果好的性質。
 直接把 chunk 塞給 agent 就退化成一般 RAG 了。
 
-`/concept/{id}` 的全文是**請求時從磁碟讀**，不存在索引裡——所以改一個 `.md`
-內容立即反映，不必重建索引（但新增/刪除 concept 仍要重建，索引才知道它存在）。
+**`grep` 必須先有範圍。** 允許無範圍搜尋等於留一條繞過檢索層的退路——agent 會用它，
+然後我們回到「掃三十 GB、拿回三百條命中、無從分流」的原點。範圍取自 `search` 結果的 `bundle_id`。
+
+### 全文的兩個性質
 
 `raw` 是完整檔案內容，可直接餵進 LLM context；`sections` 是切好的
 `{heading, text}`，適合「只讀根因段落」這類針對性取用。
+
+全文是**請求時從磁碟讀**，不存在索引裡——所以改一個 `.md` 內容立即反映。
+但**新增/刪除 concept 或改 `related` 仍要重建索引**，否則檢索排名與關聯圖還是舊的。
 
 ---
 

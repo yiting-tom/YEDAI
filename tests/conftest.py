@@ -47,7 +47,13 @@ def corpus(tmp_path: Path) -> Path:
     write_concept(
         okf,
         "title-hit",
-        frontmatter={"title": "XTR-05 PARTICLE 調查", "description": "標題命中", "tags": ["yield"]},
+        frontmatter={
+            "title": "XTR-05 PARTICLE 調查",
+            "description": "標題命中",
+            "tags": ["yield"],
+            # 含一個懸空引用，讓關聯展開的兩條路徑都有東西可測
+            "related": ["cpt_body-hit", "cpt_sibling", "cpt_ghost"],
+        },
         body="## 現象\n\n這裡沒有關鍵詞。\n",
     )
     # 相同關鍵詞只出現在內文
@@ -79,6 +85,33 @@ def corpus(tmp_path: Path) -> Path:
         body="## 現象\n\nQDN-01 觀察到 VOID。\n",
     )
     return root
+
+
+@pytest.fixture
+def graph_corpus(tmp_path: Path) -> Path:
+    """關聯圖：A → B、C（外加一個懸空引用）；B → D；E 完全孤立。
+
+        A ──→ B ──→ D
+        │
+        └──→ C          E（孤立）
+        └──→ cpt_ghost（懸空）
+    """
+    root = tmp_path / "graph"
+    okf = make_bundle(root, "g1")
+    write_concept(okf, "a", frontmatter={"id": "cpt_a", "title": "A",
+                                         "related": ["cpt_b", "cpt_c", "cpt_ghost"]})
+    write_concept(okf, "b", frontmatter={"id": "cpt_b", "title": "B", "related": ["cpt_d"]})
+    write_concept(okf, "c", frontmatter={"id": "cpt_c", "title": "C"})
+    write_concept(okf, "d", frontmatter={"id": "cpt_d", "title": "D"})
+    write_concept(okf, "e", frontmatter={"id": "cpt_e", "title": "E"})
+    return root
+
+
+@pytest.fixture
+def graph_index(graph_corpus: Path, config):
+    from yedai.index import build_index
+
+    return build_index(graph_corpus, config, EntityDictionary.load(config.dictionary_path))
 
 
 @pytest.fixture

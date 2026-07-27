@@ -104,6 +104,7 @@ def index(
     table.add_row("不重複實體", str(s.entities_total))
     table.add_row("  來自字典", str(s.entities_dict))
     table.add_row("  來自 regex fallback", str(s.entities_regex))
+    table.add_row("懸空關聯", str(s.dangling_related))
     table.add_row("解析失敗", str(s.parse_skipped))
     table.add_row("解析警告", str(s.parse_warnings))
     console.print(table)
@@ -268,6 +269,19 @@ def gen_synthetic(
         result = generate(out, n_bundles=bundles, seed=seed)
     console.print_json(json.dumps(result, ensure_ascii=False))
     err.print(f"\n[yellow]{DISCLAIMER}[/yellow]")
+
+
+@app.command()
+def mcp(config: Optional[Path] = ConfigOpt) -> None:
+    """啟動 MCP server（stdio），供 claude-agent-sdk 等 agent 連接。"""
+    from .mcp_server import main as mcp_main
+
+    _config(config)  # 提早驗證設定，錯誤才不會變成 stdio 上的雜訊
+    try:
+        mcp_main(str(config) if config else None)
+    except (FileNotFoundError, ValueError) as exc:
+        err.print(f"[red]MCP server 啟動失敗：[/red] {exc}")
+        raise typer.Exit(2) from exc
 
 
 @app.command()

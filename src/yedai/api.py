@@ -10,13 +10,30 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .config import Config
-from .entities import EntityDictionary
-from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
+from .fulltext import (
+    MAX_BATCH,
+    ConceptFileMissing,
+    ConceptNotFound,
+    ConceptPathEscape,
+    load_concept,
+    load_concepts,
+)
+from .graph import DIRECTIONS, MAX_DEPTH, neighbors as expand_neighbors
+from .grep import DEFAULT_MAX_RESULTS, InvalidPattern, ScopeRequired, UnknownScope, grep as run_grep
 from .index import Index
+from .runtime import Runtime
 from .search import MODES, SearchOutcome, Searcher
 from .telemetry import TelemetryStore, build_report
 
 ModeParam = Literal["A", "B", "C", "compare"]
+DirectionParam = Literal["out", "in", "both"]
+
+
+class ConceptsIn(BaseModel):
+    concept_ids: list[str] = Field(
+        ..., min_length=1, max_length=MAX_BATCH, description=f"concept id 陣列，最多 {MAX_BATCH} 筆"
+    )
+    include_raw: bool = Field(True, description="是否包含原始 markdown 全文")
 
 
 class FeedbackIn(BaseModel):
@@ -43,14 +60,12 @@ def _load_state() -> None:
     state.loaded = False
     state.error = None
     try:
-        cfg = Config.load(os.environ.get("YEDAI_CONFIG") or None)
-        dictionary = EntityDictionary.load(cfg.dictionary_path)
-        idx = Index.load(os.environ.get("YEDAI_INDEX") or cfg.index_path)
-        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
-        state.config = cfg
-        state.index = idx
-        state.searcher = Searcher(idx, cfg, dictionary)
-        state.store = TelemetryStore.create(cfg)
+        # 與 MCP server 共用同一條載入路徑——複製一份必然分歧
+        rt = Runtime.load()
+        state.config = rt.config
+        state.index = rt.index
+        state.searcher = rt.searcher
+        state.store = rt.store
         state.loaded = True
     except Exception as exc:  # 啟動失敗不應讓服務無法回應 /healthz
         state.error = f"{type(exc).__name__}: {exc}"
@@ -155,6 +170,91 @@ def search(
 
     query_id = state.store.log_query(outcome, requested_mode=mode)
     return _outcome_payload(outcome, query_id, mode)
+
+
+@app.post(
+    "/concepts",
+    summary="批次取回 concept 全文",
+    description=(
+        f"一次取回多個 concept 的完整內容，最多 {MAX_BATCH} 筆。\n\n"
+        "**部分成功**：單一 id 失敗不影響其餘，失敗者列於 `errors`，"
+        "`reason` 區分 `not_found`（id 打錯）與 `file_missing`（索引過期）。\n\n"
+        "`include_raw=false` 時只回結構化欄位，省去原始全文的體積。"
+    ),
+    tags=["search"],
+)
+def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
+    _require_index()
+    found, errors = load_concepts(state.index, payload.concept_ids, include_raw=payload.include_raw)
+    return {
+        "requested": len(payload.concept_ids),
+        "returned": len(found),
+        "concepts": found,
+        "errors": errors,
+    }
+
+
+# 這條路由必須宣告在 /concept/{concept_id:path} 之前——path 轉換器會吃掉整個
+# 尾段，先宣告的規則先比對，順序反了會讓 concept_id 變成 "xxx/neighbors"。
+@app.get(
+    "/concept/{concept_id:path}/neighbors",
+    summary="展開 concept 關聯",
+    description=(
+        "沿 `related` 展開關聯，重現 agent 在小規模語料上手動跳轉的行為。\n\n"
+        "`direction=in` 回傳**誰指向這個 concept**——那是 agent 自己拼不出來、"
+        "但排查時最想知道的資訊。\n\n"
+        f"`depth` 上限 {MAX_DEPTH}。指向語料中不存在 id 的懸空引用列於 `dangling`。"
+    ),
+    tags=["search"],
+)
+def neighbors(
+    concept_id: str,
+    depth: int = Query(1, ge=1, le=MAX_DEPTH, description="展開跳數"),
+    direction: DirectionParam = Query("both", description="out=我指向誰 / in=誰指向我 / both"),
+) -> dict[str, Any]:
+    _require_index()
+    try:
+        return expand_neighbors(state.index, concept_id, depth=depth, direction=direction)
+    except ConceptNotFound:
+        raise HTTPException(status_code=404, detail=f"unknown concept_id: {concept_id}") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@app.get(
+    "/grep",
+    summary="限定範圍的字面／正則搜尋",
+    description=(
+        "**必須指定範圍**（`bundle_id` 或 `concept_id` 至少其一）。\n\n"
+        "這不是效能保護，是設計意圖：先用 `/search` 把語料縮到 2~3 個 bundle，"
+        "再在那個範圍裡做字面搜尋——那正是小規模 agentic file search 有效的條件。\n\n"
+        "預設字面比對；`regex=true` 才啟用正則（使用者正則可能觸發災難性回溯）。"
+    ),
+    tags=["search"],
+)
+def grep(
+    pattern: str = Query(..., min_length=1, description="搜尋樣式"),
+    bundle_id: list[str] = Query(default=[], description="限定 bundle，可重複"),
+    concept_id: list[str] = Query(default=[], description="限定 concept，可重複"),
+    regex: bool = Query(False, description="是否以正則比對"),
+    ignore_case: bool = Query(False, description="是否忽略大小寫"),
+    max_results: int = Query(DEFAULT_MAX_RESULTS, ge=1, le=1000, description="結果筆數上限"),
+) -> dict[str, Any]:
+    _require_index()
+    try:
+        return run_grep(
+            state.index,
+            pattern,
+            bundle_ids=bundle_id,
+            concept_ids=concept_id,
+            regex=regex,
+            ignore_case=ignore_case,
+            max_results=max_results,
+        )
+    except UnknownScope as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else exc)) from None
+    except (ScopeRequired, InvalidPattern) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 @app.get(

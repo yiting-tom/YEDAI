@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .index import DocMeta, Index
 from .parser import parse_concept, split_frontmatter
+
+#: 批次上限。超過這個量代表 agent 該先縮範圍，而不是把整個 bundle 拉進 context。
+MAX_BATCH = 50
 
 
 class ConceptNotFound(KeyError):
@@ -108,3 +111,38 @@ def load_concept(index: Index, concept_id: str) -> dict[str, Any]:
         "frontmatter": frontmatter,
         "raw": raw,
     }
+
+
+def load_concepts(
+    index: Index,
+    concept_ids: Iterable[str],
+    include_raw: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """批次取回，**部分成功**語意。
+
+    單一 id 失敗就讓整批失敗，會逼 agent 退回逐筆呼叫，等於白做這個介面。
+    錯誤原因區分 not_found（id 打錯）與 file_missing（索引過期）——
+    兩者需要的處置完全不同。
+    """
+    concepts: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for concept_id in concept_ids:
+        try:
+            data = load_concept(index, concept_id)
+        except ConceptNotFound:
+            errors.append(
+                {"concept_id": concept_id, "reason": "not_found", "detail": "索引中查無此 concept_id"}
+            )
+            continue
+        except ConceptFileMissing as exc:
+            errors.append({"concept_id": concept_id, "reason": "file_missing", "detail": str(exc)})
+            continue
+        except ConceptPathEscape as exc:
+            errors.append({"concept_id": concept_id, "reason": "path_escape", "detail": str(exc)})
+            continue
+        if not include_raw:
+            data.pop("raw", None)
+        concepts.append(data)
+
+    return concepts, errors

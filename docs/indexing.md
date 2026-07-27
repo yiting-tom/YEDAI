@@ -101,6 +101,7 @@ uv run yedai index /path/to/bundles -c config.local.yaml
 │ 不重複實體             │  858 │
 │   來自字典             │   81 │
 │   來自 regex fallback  │  777 │
+│ 懸空關聯               │    0 │
 │ 解析失敗               │    0 │
 │ 解析警告               │    0 │
 └────────────────────────┴──────┘
@@ -113,6 +114,7 @@ uv run yedai index /path/to/bundles -c config.local.yaml
 | **解析失敗** | 應該是 0。不是 0 就去看下面列出的清單——那是語料品質的訊號 |
 | **詞彙量 protected / naive** | 比值明顯 > 1 代表識別碼保護確實把大量識別碼從碎片還原成獨立詞元。接近 1 代表你的語料沒什麼識別碼，模式 B 大概不會有效果 |
 | **來自字典 vs regex fallback** | fallback 佔比高 = 字典覆蓋率缺口大。但也可能是正則誤圈（見下方） |
+| **懸空關聯** | `related` 指向語料中不存在的 concept 的筆數。以模型產出的 concept 來說，這個數字是語料品質的直接訊號——偏高代表生成階段的 id 對齊有問題。這些 id 不會被靜默丟棄，會出現在 `neighbors` 回應的 `dangling` |
 | **平均 concept 字元數** | 遠低於預期表示解析可能吃掉了內容 |
 | **type 分佈** | 若出現 `metric` / `Metric` / `量測項目` 這類同義不同寫，代表 type 詞彙需要受控 |
 
@@ -150,8 +152,12 @@ identifier_patterns:
 | **編輯 concept 內容** | ⚠️ 見下方說明 |
 | `identifier_patterns` | 斷詞結果改變 |
 | `entity_field_weights` | 實體權重在建索引時就寫死了 |
+| 修改 `related` 欄位 | 關聯邊在建索引時算好，`neighbors` 會拿到舊的圖 |
 | 換字典 / 改字典內容 | 實體倒排索引改變 |
 | 升級 `INDEX_FORMAT_VERSION` | 索引結構改變，舊檔會被拒絕 |
+
+目前的索引格式版本是 **3**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊）。
+從舊版升上來時載入會被拒絕並提示重建，直接重跑 `yedai index` 即可。
 
 ### 不必重建（查詢期才套用）
 

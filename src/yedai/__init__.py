@@ -6,10 +6,19 @@
 
 from .config import FIELDS, Config
 from .entities import EntityDictionary, EntityExtractor, EntityHit
-from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
+from .fulltext import (
+    ConceptFileMissing,
+    ConceptNotFound,
+    ConceptPathEscape,
+    load_concept,
+    load_concepts,
+)
+from .graph import neighbors
+from .grep import InvalidPattern, ScopeRequired, UnknownScope, grep
 from .index import Index, build_index
 from .models import Bundle, Concept, Figure, Section
 from .parser import load_bundles
+from .runtime import Runtime
 from .search import MODES, Hit, ModeResult, SearchOutcome, Searcher
 from .telemetry import TelemetryStore, build_report
 from .tokenizer import Tokenizer, normalise_identifier
@@ -31,16 +40,23 @@ __all__ = [
     "Figure",
     "Hit",
     "Index",
+    "InvalidPattern",
     "ModeResult",
+    "Runtime",
+    "ScopeRequired",
     "SearchOutcome",
     "Searcher",
     "Section",
     "TelemetryStore",
     "Tokenizer",
+    "UnknownScope",
     "build_index",
     "build_report",
+    "grep",
     "load_bundles",
     "load_concept",
+    "load_concepts",
+    "neighbors",
     "normalise_identifier",
     "__version__",
 ]

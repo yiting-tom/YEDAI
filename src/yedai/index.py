@@ -20,7 +20,8 @@ from .parser import load_bundles
 from .tokenizer import Tokenizer
 
 # v2：新增 by_id 與 bundle_roots，使 concept 全文可於請求時從磁碟定位
-INDEX_FORMAT_VERSION = 2
+# v3：新增 related_out / related_in / dangling，使 agent 能沿 related 展開
+INDEX_FORMAT_VERSION = 3
 N_FIELDS = len(FIELDS)
 
 
@@ -195,6 +196,9 @@ class CorpusStats:
     entities_regex: int = 0
     parse_skipped: int = 0
     parse_warnings: int = 0
+    #: `related` 指向語料中不存在的 id 的總筆數。模型產出的 concept，這個數字本身
+    #: 就是語料品質的訊號，所以留在統計裡而不是靜默丟棄。
+    dangling_related: int = 0
     types: dict[str, int] = field(default_factory=dict)
 
 
@@ -213,6 +217,13 @@ class Index:
     #: bundle_id → 該 bundle 的絕對根目錄。以 bundle 為單位登錄，
     #: 不逐筆存進 DocMeta——否則同一個字串會在 200 萬筆資料裡重複。
     bundle_roots: dict[str, str] = field(default_factory=dict)
+    #: concept_id → 它 `related` 指向且確實存在的 concept
+    related_out: dict[str, list[str]] = field(default_factory=dict)
+    #: concept_id → 哪些 concept 指向它。建索引時算好——這是 agent 最需要
+    #: 但最難自己拼出來的資訊（「還有哪些文件引用了這個概念」）。
+    related_in: dict[str, list[str]] = field(default_factory=dict)
+    #: concept_id → 它 `related` 指向但語料中不存在的 id
+    dangling: dict[str, list[str]] = field(default_factory=dict)
     format_version: int = INDEX_FORMAT_VERSION
 
     # ------------------------------------------------------------------
@@ -220,6 +231,9 @@ class Index:
     def doc_of(self, concept_id: str) -> DocMeta | None:
         pos = self.by_id.get(concept_id)
         return None if pos is None else self.docs[pos]
+
+    def has(self, concept_id: str) -> bool:
+        return concept_id in self.by_id
 
     # ------------------------------------------------------------------
 
@@ -266,6 +280,7 @@ def build_index(
     total_chars = 0
     total_figures = 0
     types: Counter = Counter()
+    raw_related: dict[str, list[str]] = {}
 
     doc_idx = 0
     for bundle in bundles:
@@ -289,6 +304,8 @@ def build_index(
                 )
             else:
                 index.by_id[concept.concept_id] = doc_idx
+                if concept.related:
+                    raw_related[concept.concept_id] = list(concept.related)
 
             index.docs.append(_doc_meta(concept))
             total_chars += len(concept.body)
@@ -299,6 +316,7 @@ def build_index(
     index.naive.finalise()
     index.protected.finalise()
     index.entities.n_docs = doc_idx
+    dangling_total = _build_related_edges(index, raw_related)
 
     coverage = index.entities.coverage()
     n = max(doc_idx, 1)
@@ -314,9 +332,36 @@ def build_index(
         entities_regex=coverage["regex"],
         parse_skipped=len(report.skipped),
         parse_warnings=len(report.warnings),
+        dangling_related=dangling_total,
         types=dict(types.most_common()),
     )
     return index
+
+
+def _build_related_edges(index: Index, raw_related: dict[str, list[str]]) -> int:
+    """把 frontmatter 的 related 拆成「可解析的邊」與「懸空引用」。
+
+    必須等全部 concept 都掃過才能判定懸空——否則前向引用會被誤判。
+    入向邊在這裡一次算完，查詢時就不必遍歷全部文件。
+    """
+    dangling_total = 0
+    for source, targets in raw_related.items():
+        resolved: list[str] = []
+        missing: list[str] = []
+        for target in dict.fromkeys(targets):  # 去重但保序
+            if target == source:
+                continue  # 自我引用不成邊
+            if index.has(target):
+                resolved.append(target)
+                index.related_in.setdefault(target, []).append(source)
+            else:
+                missing.append(target)
+        if resolved:
+            index.related_out[source] = resolved
+        if missing:
+            index.dangling[source] = missing
+            dangling_total += len(missing)
+    return dangling_total
 
 
 def _doc_meta(concept: Concept) -> DocMeta:

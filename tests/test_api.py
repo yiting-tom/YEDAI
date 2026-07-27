@@ -152,6 +152,104 @@ def test_concept_missing_file_is_410(client, corpus, config) -> None:
     assert "重建索引" in r.json()["detail"]
 
 
+def test_concepts_batch(client) -> None:
+    r = client.post(
+        "/concepts",
+        json={"concept_ids": ["cpt_title-hit", "cpt_body-hit", "cpt_rare"]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["returned"] == 3
+    assert body["errors"] == []
+    assert [c["concept_id"] for c in body["concepts"]] == [
+        "cpt_title-hit",
+        "cpt_body-hit",
+        "cpt_rare",
+    ]
+
+
+def test_concepts_partial_success_is_200(client) -> None:
+    r = client.post("/concepts", json={"concept_ids": ["cpt_title-hit", "cpt_nope"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["returned"] == 1
+    assert body["errors"][0]["reason"] == "not_found"
+
+
+def test_concepts_include_raw_false(client) -> None:
+    body = client.post(
+        "/concepts", json={"concept_ids": ["cpt_title-hit"], "include_raw": False}
+    ).json()
+    assert "raw" not in body["concepts"][0]
+
+
+def test_concepts_empty_list_is_422(client) -> None:
+    assert client.post("/concepts", json={"concept_ids": []}).status_code == 422
+
+
+def test_concepts_over_limit_is_422(client) -> None:
+    assert client.post("/concepts", json={"concept_ids": ["x"] * 200}).status_code == 422
+
+
+def test_neighbors_depth_one(client) -> None:
+    r = client.get("/concept/cpt_title-hit/neighbors", params={"depth": 1, "direction": "out"})
+    assert r.status_code == 200
+    body = r.json()
+    assert {n["concept_id"] for n in body["neighbors"]} == {"cpt_body-hit", "cpt_sibling"}
+    assert body["dangling"] == ["cpt_ghost"]
+
+
+def test_neighbors_inbound(client) -> None:
+    body = client.get("/concept/cpt_body-hit/neighbors", params={"direction": "in"}).json()
+    assert [n["concept_id"] for n in body["neighbors"]] == ["cpt_title-hit"]
+
+
+def test_neighbors_unknown_is_404(client) -> None:
+    assert client.get("/concept/cpt_nope/neighbors").status_code == 404
+
+
+def test_neighbors_depth_over_limit_is_422(client) -> None:
+    assert client.get("/concept/cpt_title-hit/neighbors", params={"depth": 5}).status_code == 422
+
+
+def test_neighbors_bad_direction_is_422(client) -> None:
+    r = client.get("/concept/cpt_title-hit/neighbors", params={"direction": "sideways"})
+    assert r.status_code == 422
+
+
+def test_grep_scoped(client) -> None:
+    r = client.get("/grep", params={"pattern": "PARTICLE", "bundle_id": "bdl_b1"})
+    assert r.status_code == 200
+    assert r.json()["results"]
+
+
+def test_grep_without_scope_is_422(client) -> None:
+    r = client.get("/grep", params={"pattern": "PARTICLE"})
+    assert r.status_code == 422
+    assert "search" in r.json()["detail"]
+
+
+def test_grep_unknown_bundle_is_404(client) -> None:
+    r = client.get("/grep", params={"pattern": "x", "bundle_id": "bdl_nope"})
+    assert r.status_code == 404
+
+
+def test_grep_invalid_regex_is_422(client) -> None:
+    r = client.get(
+        "/grep", params={"pattern": "XTR-0(5", "bundle_id": "bdl_b1", "regex": "true"}
+    )
+    assert r.status_code == 422
+
+
+def test_grep_scope_from_search_results(client) -> None:
+    """agent 的實際用法：先 search 縮範圍，再拿 bundle_id 去 grep。"""
+    search = client.get("/search", params={"q": "PARTICLE", "mode": "C", "k": 3}).json()
+    bundle_id = search["results"]["C"]["hits"][0]["bundle_id"]
+    r = client.get("/grep", params={"pattern": "PARTICLE", "bundle_id": bundle_id})
+    assert r.status_code == 200
+    assert r.json()["results"]
+
+
 def test_openapi_lists_all_endpoints(client) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     assert {
@@ -161,6 +259,9 @@ def test_openapi_lists_all_endpoints(client) -> None:
         "/report",
         "/healthz",
         "/concept/{concept_id}",
+        "/concepts",
+        "/concept/{concept_id}/neighbors",
+        "/grep",
     } <= set(paths)
 
 
