@@ -37,6 +37,7 @@ cp config.example.yaml config.local.yaml     # config.local.yaml 已被 gitignor
 cp dictionary.example.yaml dictionary.local.yaml   # 填入你的機台/製程/缺陷字典
 
 # 2. 建索引（bundle 根目錄 = 內含多個 bundle 子目錄的那一層）
+#    索引格式版本變更時舊快取會被拒絕載入並提示重建，直接重跑這行即可
 uv run yedai index /path/to/your/bundles -c config.local.yaml
 
 # 3. 查詢
@@ -61,11 +62,31 @@ uv run yedai serve -c config.local.yaml
 
 | 端點 | 用途 |
 |---|---|
-| `GET /search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`（三模式並排） |
+| `GET /search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`（三模式並排）。**只回 header 菜單，不回內容** |
+| `GET /concept/{concept_id}` | 取回單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
 | `POST /feedback` | 記錄點選；`query_id` 來自 `/search` 回應 |
 | `GET /stats` | 語料統計與索引狀態 |
 | `GET /report` | 去識別化統計報告 |
 | `GET /healthz` | 健康檢查 |
+
+### Agent 的使用流程
+
+```
+query → /search  → header 菜單（index.md 行格式）
+                 → agent 自行挑 3~7 筆
+                 → /concept/{id} 逐一取全文
+                 → 作答
+```
+
+**`/search` 刻意不回傳內容片段。** 回一份菜單、讓 agent 自己決定讀哪幾份全文，
+才保得住「agent 當 reranker、讀完整文件」這個讓小規模 agentic file search 效果好的性質。
+直接把 chunk 塞給 agent 就退化成一般 RAG 了。
+
+`/concept/{id}` 的全文是**請求時從磁碟讀**，不存在索引裡——所以改一個 `.md`
+內容立即反映，不必重建索引（但新增/刪除 concept 仍要重建，索引才知道它存在）。
+
+`raw` 是完整檔案內容，可直接餵進 LLM context；`sections` 是切好的
+`{heading, text}`，適合「只讀根因段落」這類針對性取用。
 
 ---
 

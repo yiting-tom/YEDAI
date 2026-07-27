@@ -19,7 +19,8 @@ from .models import Concept
 from .parser import load_bundles
 from .tokenizer import Tokenizer
 
-INDEX_FORMAT_VERSION = 1
+# v2：新增 by_id 與 bundle_roots，使 concept 全文可於請求時從磁碟定位
+INDEX_FORMAT_VERSION = 2
 N_FIELDS = len(FIELDS)
 
 
@@ -207,7 +208,18 @@ class Index:
     stats: CorpusStats = field(default_factory=CorpusStats)
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: concept_id → docs 的位置。沒有它就得線性掃描 200 萬筆才能定位一個 concept。
+    by_id: dict[str, int] = field(default_factory=dict)
+    #: bundle_id → 該 bundle 的絕對根目錄。以 bundle 為單位登錄，
+    #: 不逐筆存進 DocMeta——否則同一個字串會在 200 萬筆資料裡重複。
+    bundle_roots: dict[str, str] = field(default_factory=dict)
     format_version: int = INDEX_FORMAT_VERSION
+
+    # ------------------------------------------------------------------
+
+    def doc_of(self, concept_id: str) -> DocMeta | None:
+        pos = self.by_id.get(concept_id)
+        return None if pos is None else self.docs[pos]
 
     # ------------------------------------------------------------------
 
@@ -257,6 +269,7 @@ def build_index(
 
     doc_idx = 0
     for bundle in bundles:
+        index.bundle_roots[bundle.bundle_id] = str(Path(bundle.root).resolve())
         for concept in bundle.concepts:
             fields = concept.field_texts()
             texts = [fields[f] for f in FIELDS]
@@ -266,6 +279,16 @@ def build_index(
 
             weighted, meta = _concept_entities(concept, extractor, entity_weights)
             index.entities.add(doc_idx, weighted, meta)
+
+            # 重複 id 不覆蓋先出現者——靜默覆蓋會讓「取全文」拿到另一份文件
+            if concept.concept_id in index.by_id:
+                index.warnings.append(
+                    f"重複的 concept_id {concept.concept_id!r}："
+                    f"保留先出現的 {index.docs[index.by_id[concept.concept_id]].path}，"
+                    f"忽略 {concept.path}"
+                )
+            else:
+                index.by_id[concept.concept_id] = doc_idx
 
             index.docs.append(_doc_meta(concept))
             total_chars += len(concept.body)

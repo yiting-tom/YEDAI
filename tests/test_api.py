@@ -117,9 +117,51 @@ def test_report_endpoint_has_no_corpus_content(client) -> None:
         assert needle not in blob, f"/report 洩漏了語料內容：{needle!r}"
 
 
+def test_concept_fulltext_roundtrip(client) -> None:
+    search = client.get("/search", params={"q": "PARTICLE", "mode": "B", "k": 5}).json()
+    hit = search["results"]["B"]["hits"][0]
+
+    r = client.get(f"/concept/{hit['concept_id']}")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["concept_id"] == hit["concept_id"]
+    assert body["bundle_id"] == hit["bundle_id"]
+    assert body["type"] == hit["type"]
+    assert body["title"] == hit["title"]
+    assert body["path"] == hit["path"]
+    assert body["index_line"] == hit["index_line"]
+    # 這是整個端點存在的理由：agent 拿得到全文
+    assert body["raw"].startswith("---")
+    assert isinstance(body["sections"], list) and body["sections"]
+    assert isinstance(body["frontmatter"], dict)
+
+
+def test_concept_unknown_id_is_404(client) -> None:
+    assert client.get("/concept/cpt_definitely_not_here").status_code == 404
+
+
+def test_concept_missing_file_is_410(client, corpus, config) -> None:
+    from yedai import api
+
+    meta = api.state.index.doc_of("cpt_rare")
+    (corpus / "b1" / meta.path).unlink()
+
+    r = client.get("/concept/cpt_rare")
+    assert r.status_code == 410
+    assert "重建索引" in r.json()["detail"]
+
+
 def test_openapi_lists_all_endpoints(client) -> None:
     paths = client.get("/openapi.json").json()["paths"]
-    assert {"/search", "/feedback", "/stats", "/report", "/healthz"} <= set(paths)
+    assert {
+        "/search",
+        "/feedback",
+        "/stats",
+        "/report",
+        "/healthz",
+        "/concept/{concept_id}",
+    } <= set(paths)
 
 
 def test_docs_page_served(client) -> None:

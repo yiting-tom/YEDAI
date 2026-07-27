@@ -99,8 +99,9 @@ KNOWN_FIELDS = {
 }
 
 
-def parse_concept(path: Path, bundle_id: str, bundle_root: Path) -> Concept:
-    fm, body = split_frontmatter(path.read_text(encoding="utf-8"))
+def parse_concept(path: Path, bundle_id: str, bundle_root: Path, text: str | None = None) -> Concept:
+    """`text` 讓呼叫端把已讀入的檔案內容傳進來，避免同一個檔案被讀兩次。"""
+    fm, body = split_frontmatter(path.read_text(encoding="utf-8") if text is None else text)
     rel = str(path.relative_to(bundle_root))
     cid = str(fm.get("id") or "").strip() or f"path:{rel}"
     return Concept(

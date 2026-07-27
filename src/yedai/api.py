@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from .config import Config
 from .entities import EntityDictionary
+from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
 from .index import Index
 from .search import MODES, SearchOutcome, Searcher
 from .telemetry import TelemetryStore, build_report
@@ -154,6 +155,30 @@ def search(
 
     query_id = state.store.log_query(outcome, requested_mode=mode)
     return _outcome_payload(outcome, query_id, mode)
+
+
+@app.get(
+    "/concept/{concept_id:path}",
+    summary="取回 concept 全文",
+    description=(
+        "以 `/search` 結果中的 `concept_id` 取回該 concept 的完整內容。\n\n"
+        "同時回傳 `raw`（原始 markdown 全文，可直接餵進 LLM context）與解析後的 "
+        "`frontmatter` / `sections` / `figures`。\n\n"
+        "全文於請求時從磁碟讀取，因此檔案變更會立即反映，無須重建索引。"
+    ),
+    tags=["search"],
+)
+def concept(concept_id: str) -> dict[str, Any]:
+    _require_index()
+    try:
+        return load_concept(state.index, concept_id)
+    except ConceptNotFound:
+        raise HTTPException(status_code=404, detail=f"unknown concept_id: {concept_id}") from None
+    except ConceptPathEscape as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+    except ConceptFileMissing as exc:
+        # 410 而非 404：這個 concept 曾經存在，是語料變動了，處置方式是重建索引
+        raise HTTPException(status_code=410, detail=str(exc)) from None
 
 
 @app.post("/feedback", summary="記錄點選回饋", tags=["search"])

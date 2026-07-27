@@ -6,6 +6,7 @@
 
 from .config import FIELDS, Config
 from .entities import EntityDictionary, EntityExtractor, EntityHit
+from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
 from .index import Index, build_index
 from .models import Bundle, Concept, Figure, Section
 from .parser import load_bundles
@@ -20,6 +21,9 @@ __all__ = [
     "MODES",
     "Bundle",
     "Concept",
+    "ConceptFileMissing",
+    "ConceptNotFound",
+    "ConceptPathEscape",
     "Config",
     "EntityDictionary",
     "EntityExtractor",
@@ -36,6 +40,7 @@ __all__ = [
     "build_index",
     "build_report",
     "load_bundles",
+    "load_concept",
     "normalise_identifier",
     "__version__",
 ]
