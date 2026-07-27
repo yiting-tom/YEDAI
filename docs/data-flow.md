@@ -102,7 +102,7 @@ flowchart TB
 
 ## Level 1 — 階段二：線上查詢
 
-`GET /search?q=…&mode=compare&k=10`（`api.py:137`）
+`GET /v1/search?q=…&mode=compare&k=10`（`api.py:137`）
 
 ```mermaid
 flowchart TB
@@ -184,7 +184,7 @@ final = 0.4 · lex_n + 0.6 · ent            實體腿本身已是 [0,1] 的涵�
 
 ## Level 1 — 階段三：取回全文
 
-`GET /concept/{concept_id}`（`api.py:171` → `fulltext.load_concept`，`fulltext.py:55`）
+`GET /v1/concept/{concept_id}`（`api.py` → `fulltext.load_concept`，`fulltext.py:55`）
 
 ```mermaid
 flowchart TB
@@ -213,8 +213,8 @@ flowchart TB
 
 | | 是否立即反映 |
 |---|---|
-| `/concept/{id}` 的內容 | ✅ 立即 |
-| `/search` 的排名 | ❌ 要重建索引 |
+| `/v1/concept/{id}` 的內容 | ✅ 立即 |
+| `/v1/search` 的排名 | ❌ 要重建索引 |
 
 詳見 [indexing.md](./indexing.md#4-何時必須重建索引)。
 
@@ -254,7 +254,7 @@ grep 等於留一條繞過檢索層的退路，那會讓整套系統回到原點
 
 ## Level 1 — 階段五：取回資產
 
-`GET /concept/{id}/asset?path=`（`api.py` → `assets.resolve_asset`）
+`GET /v1/concept/{id}/asset?path=`（`api.py` → `assets.resolve_asset`）
 
 ```mermaid
 flowchart TB
@@ -291,8 +291,8 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   participant A as Agent
-  participant S as /search
-  participant C as GET /concept
+  participant S as /v1/search
+  participant C as GET /v1/concept
   participant F as OKF 檔案
   participant L as logs/*.jsonl
 
@@ -308,7 +308,7 @@ sequenceDiagram
     C-->>A: raw + frontmatter + sections + figures
   end
   A->>A: 作答
-  A->>S: POST /feedback（query_id, concept_id, rank, mode）
+  A->>S: POST /v1/feedback（query_id, concept_id, rank, mode）
   S->>L: 追加 feedback.jsonl
 ```
 
@@ -318,12 +318,12 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  SR["/search"] -->|"log_query()"| QJ[("queries.jsonl<br/>含查詢原文<br/>❌ 不外流")]
-  FB["POST /feedback"] -->|"has_query() 驗證<br/>不存在 → 404"| FJ[("feedback.jsonl")]
+  SR["/v1/search"] -->|"log_query()"| QJ[("queries.jsonl<br/>含查詢原文<br/>❌ 不外流")]
+  FB["POST /v1/feedback"] -->|"has_query() 驗證<br/>不存在 → 404"| FJ[("feedback.jsonl")]
   QJ --> BR["build_report()<br/><i>telemetry.py:164</i>"]
   FJ --> BR
   IDX[("index.stats")] --> BR
-  BR --> RP(["/report<br/>✅ 零內容，可分享"])
+  BR --> RP(["/v1/report<br/>✅ 零內容，可分享"])
 ```
 
 `build_report()` 只輸出數量、比例、分佈與設定參數。

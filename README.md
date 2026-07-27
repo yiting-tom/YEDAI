@@ -69,18 +69,28 @@ uv run yedai serve -c config.local.yaml
 # 互動式文件： http://127.0.0.1:8000/docs
 ```
 
-| 端點 | 用途 |
-|---|---|
-| `GET /search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`（三模式並排）。**只回 header 菜單，不回內容** |
-| `GET /concept/{concept_id}` | 取回單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
-| `POST /concepts` | 批次取全文（最多 50 筆，部分成功語意） |
-| `GET /concept/{concept_id}/neighbors` | 沿 `related` 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
-| `GET /concept/{concept_id}/asset?path=` | 下載該 concept 引用的資產（`_assets/*.png` 等），預設 inline |
-| `GET /grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
-| `POST /feedback` | 記錄點選；`query_id` 來自 `/search` 回應 |
-| `GET /stats` | 語料統計與索引狀態 |
-| `GET /report` | 去識別化統計報告 |
-| `GET /healthz` | 健康檢查 |
+功能端點都在 **`/v1`** 之下，依用途分成五類；`/healthz` 與 `/version` 不帶版本前綴，
+因為它們描述的是服務本身而非 API 契約——監控與部署不該因 API 改版而失效。
+
+| 分類 | 端點 | 用途 |
+|---|---|---|
+| **retrieval**<br>找到 concept | `GET /v1/search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`。**只回菜單，不回內容** |
+| | `GET /v1/grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
+| **content**<br>取得內容 | `GET /v1/concept/{id}` | 單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
+| | `POST /v1/concepts` | 批次取全文（最多 50 筆，部分成功語意） |
+| | `GET /v1/concept/{id}/asset?path=` | 下載該 concept 引用的資產，預設 inline |
+| **graph**<br>沿關聯導航 | `GET /v1/concept/{id}/neighbors` | 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
+| **telemetry**<br>量測與回饋 | `POST /v1/feedback` | 記錄點選；`query_id` 來自 `/v1/search` 回應 |
+| | `GET /v1/report` | 去識別化統計報告 |
+| **ops**<br>服務與語料狀態 | `GET /v1/stats` | 語料統計與索引狀態 |
+| | `GET /healthz` | 健康檢查（不版本化） |
+| | `GET /version` | 套件／API／索引格式版本（不版本化） |
+
+前三類正好對應建議流程（search → get → neighbors），所以分組本身就是流程說明。
+`telemetry` 刻意獨立——那兩個端點服務的是 A/B/C 消融實驗，不是日常檢索，agent 不需要呼叫。
+
+`GET /version` 會同時回報「本程式支援的索引格式」與「目前載入索引的格式」，
+兩者無對應關係；「支援 v3、載入的是 v2」正是最需要一眼看出的除錯情境。
 
 ## 給 Agent 用（MCP）
 
@@ -129,8 +139,8 @@ search（縮範圍、取菜單）
 `/concept/{id}` 回傳的 `assets` 陣列可以直接餵給資產端點：
 
 ```bash
-curl "$B/concept/$CID" | jq -r '.assets[]' \
-  | while read p; do curl -sO "$B/concept/$CID/asset?path=$(jq -rn --arg x "$p" '$x|@uri')"; done
+curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
+  | while read p; do curl -sO "$B/v1/concept/$CID/asset?path=$(jq -rn --arg x "$p" '$x|@uri')"; done
 ```
 
 路徑以**該 concept 檔案所在目錄**為基準解析，和 markdown 相對連結、`## Citations`

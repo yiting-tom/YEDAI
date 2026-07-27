@@ -108,7 +108,7 @@ search（縮範圍、取菜單）
 目前只能走 HTTP：
 
 ```
-GET /concept/{concept_id}/asset?path=<assets 陣列中的值>
+GET /v1/concept/{concept_id}/asset?path=<assets 陣列中的值>
 ```
 
 `get_concept` / `get_concepts` 回傳的 `assets` 陣列與 `figures[].description`
@@ -159,16 +159,20 @@ uv run yedai serve -c config.local.yaml     # http://127.0.0.1:8000/docs
 
 | 工具 | HTTP |
 |---|---|
-| `search` | `GET /search?q=&mode=&k=` |
-| `get_concept` | `GET /concept/{concept_id}` |
-| `get_concepts` | `POST /concepts` |
-| `neighbors` | `GET /concept/{concept_id}/neighbors?depth=&direction=` |
-| `grep` | `GET /grep?pattern=&bundle_id=&regex=` |
-| `stats` | `GET /stats` |
-| （無對應工具） | `GET /concept/{concept_id}/asset?path=` |
+| MCP 工具 | HTTP | 分類 |
+|---|---|---|
+| `search` | `GET /v1/search?q=&mode=&k=` | retrieval |
+| `grep` | `GET /v1/grep?pattern=&bundle_id=&regex=` | retrieval |
+| `get_concept` | `GET /v1/concept/{concept_id}` | content |
+| `get_concepts` | `POST /v1/concepts` | content |
+| （無對應工具） | `GET /v1/concept/{concept_id}/asset?path=` | content |
+| `neighbors` | `GET /v1/concept/{concept_id}/neighbors?depth=&direction=` | graph |
+| `stats` | `GET /v1/stats` | ops |
 
-HTTP 額外有 `POST /feedback`（點選回饋）與 `GET /report`（去識別化統計報告），
-那兩個是給量測用的，不在 agent 工具集裡。
+HTTP 額外有 `POST /v1/feedback`（點選回饋）與 `GET /v1/report`（去識別化統計報告），
+那兩個屬 `telemetry` 分類，服務的是 A/B/C 消融實驗，不在 agent 工具集裡。
+
+`GET /healthz` 與 `GET /version` 不帶版本前綴。
 
 ---
 

@@ -7,10 +7,11 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .assets import AssetForbidden, AssetNotFound, guess_media_type, resolve_asset
 from .config import Config
 from .fulltext import (
@@ -23,13 +24,56 @@ from .fulltext import (
 )
 from .graph import DIRECTIONS, MAX_DEPTH, neighbors as expand_neighbors
 from .grep import DEFAULT_MAX_RESULTS, InvalidPattern, ScopeRequired, UnknownScope, grep as run_grep
-from .index import Index
+from .index import INDEX_FORMAT_VERSION, Index
 from .runtime import Runtime
 from .search import MODES, SearchOutcome, Searcher
 from .telemetry import TelemetryStore, build_report
 
+#: API 版本。功能端點全部掛在這個前綴之下；/healthz 與 /version 不版本化，
+#: 因為它們描述的是服務本身而非 API 契約——監控不該因 API 改版而失效。
+API_VERSION = "v1"
+
 ModeParam = Literal["A", "B", "C", "compare"]
 DirectionParam = Literal["out", "in", "both"]
+
+#: 分類依 agent 的工作流切分，所以分組本身就是使用指引。
+TAGS_METADATA = [
+    {
+        "name": "retrieval",
+        "description": (
+            "**找到 concept。** 只回摘要清單，不含內容——由你決定讀哪幾份完整文件。"
+            "`grep` 必須先有範圍，範圍取自 `search` 結果的 `bundle_id`。"
+        ),
+    },
+    {
+        "name": "content",
+        "description": (
+            "**取得內容與資產。** 從 `retrieval` 拿到 `concept_id` 之後用這一組。"
+            "一次要讀多份請用批次端點，不要逐筆呼叫。"
+        ),
+    },
+    {
+        "name": "graph",
+        "description": (
+            "**沿 `related` 導航。** `direction=in` 回傳「誰指向這個 concept」，"
+            "那是排查復發問題時最需要、卻無法自己拼出來的資訊。"
+        ),
+    },
+    {
+        "name": "telemetry",
+        "description": (
+            "**量測與回饋。** 服務的是 A/B/C 消融實驗，不是日常檢索——"
+            "agent 不需要呼叫這一組。`/report` 的輸出不含任何語料內容，可安全分享。"
+        ),
+    },
+    {
+        "name": "ops",
+        "description": (
+            "**服務與語料狀態。** `/healthz` 與 `/version` 不帶版本前綴，"
+            "因為監控與部署不該因 API 改版而失效。"
+        ),
+    },
+]
 
 
 class ConceptsIn(BaseModel):
@@ -89,9 +133,13 @@ app = FastAPI(
         "- **C** B + 實體字典匹配加權\n\n"
         "`/report` 產出的統計報告不含任何語料內容，可安全分享。"
     ),
-    version="0.1.0",
+    version=__version__,
+    openapi_tags=TAGS_METADATA,
     lifespan=lifespan,
 )
+
+#: 功能端點統一掛前綴——不逐一改寫十個裝飾器；日後開 /v2 只是再掛一個 router。
+router = APIRouter(prefix=f"/{API_VERSION}")
 
 
 def _require_index() -> None:
@@ -125,12 +173,28 @@ def _outcome_payload(outcome: SearchOutcome, query_id: str, requested: str) -> d
     }
 
 
-@app.get("/healthz", summary="健康檢查", tags=["ops"])
+@app.get("/healthz", summary="健康檢查（不版本化）", tags=["ops"])
 def healthz() -> dict[str, Any]:
     return {"status": "ok", "index_loaded": state.loaded, "error": state.error}
 
 
-@app.get("/stats", summary="語料統計與索引狀態", tags=["ops"])
+@app.get("/version", summary="版本資訊（不版本化）", tags=["ops"])
+def version() -> dict[str, Any]:
+    """索引未載入時仍須可回應——這個端點的用途之一就是診斷載入失敗。"""
+    loaded = state.index if state.loaded else None
+    return {
+        "package": __version__,
+        "api": API_VERSION,
+        # 本程式支援的索引格式 vs 目前載入索引的格式：兩者無對應關係，
+        # 而「支援 v3、載入的是 v2」正是最需要一眼看出的除錯情境。
+        "index_format": INDEX_FORMAT_VERSION,
+        "index": None
+        if loaded is None
+        else {"format_version": loaded.format_version, "signature": loaded.signature},
+    }
+
+
+@router.get("/stats", summary="語料統計與索引狀態", tags=["ops"])
 def stats() -> dict[str, Any]:
     _require_index()
     s = state.index.stats
@@ -152,7 +216,7 @@ def stats() -> dict[str, Any]:
     }
 
 
-@app.get("/search", summary="查詢（單模式或三模式並排）", tags=["search"])
+@router.get("/search", summary="查詢（單模式或三模式並排）", tags=["retrieval"])
 def search(
     q: str = Query(..., min_length=1, description="查詢字串"),
     mode: ModeParam = Query("compare", description="A / B / C，或 compare 三模式並排"),
@@ -176,7 +240,7 @@ def search(
     return _outcome_payload(outcome, query_id, mode)
 
 
-@app.post(
+@router.post(
     "/concepts",
     summary="批次取回 concept 全文",
     description=(
@@ -185,7 +249,7 @@ def search(
         "`reason` 區分 `not_found`（id 打錯）與 `file_missing`（索引過期）。\n\n"
         "`include_raw=false` 時只回結構化欄位，省去原始全文的體積。"
     ),
-    tags=["search"],
+    tags=["content"],
 )
 def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
     _require_index()
@@ -200,7 +264,7 @@ def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
 
 # 這兩條路由必須宣告在 /concept/{concept_id:path} 之前——path 轉換器會吃掉整個
 # 尾段，先宣告的規則先比對，順序反了會讓 concept_id 變成 "xxx/neighbors"。
-@app.get(
+@router.get(
     "/concept/{concept_id:path}/asset",
     summary="下載 concept 引用的資產",
     description=(
@@ -214,7 +278,7 @@ def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
         "且必須位於設定允許的資產目錄（預設 `_assets`）之下。違反者回 403。"
     ),
     response_class=FileResponse,
-    tags=["search"],
+    tags=["content"],
 )
 def asset(
     concept_id: str,
@@ -241,7 +305,7 @@ def asset(
     )
 
 
-@app.get(
+@router.get(
     "/concept/{concept_id:path}/neighbors",
     summary="展開 concept 關聯",
     description=(
@@ -250,7 +314,7 @@ def asset(
         "但排查時最想知道的資訊。\n\n"
         f"`depth` 上限 {MAX_DEPTH}。指向語料中不存在 id 的懸空引用列於 `dangling`。"
     ),
-    tags=["search"],
+    tags=["graph"],
 )
 def neighbors(
     concept_id: str,
@@ -266,7 +330,7 @@ def neighbors(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
-@app.get(
+@router.get(
     "/grep",
     summary="限定範圍的字面／正則搜尋",
     description=(
@@ -275,7 +339,7 @@ def neighbors(
         "再在那個範圍裡做字面搜尋——那正是小規模 agentic file search 有效的條件。\n\n"
         "預設字面比對；`regex=true` 才啟用正則（使用者正則可能觸發災難性回溯）。"
     ),
-    tags=["search"],
+    tags=["retrieval"],
 )
 def grep(
     pattern: str = Query(..., min_length=1, description="搜尋樣式"),
@@ -302,7 +366,7 @@ def grep(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
-@app.get(
+@router.get(
     "/concept/{concept_id:path}",
     summary="取回 concept 全文",
     description=(
@@ -311,7 +375,7 @@ def grep(
         "`frontmatter` / `sections` / `figures`。\n\n"
         "全文於請求時從磁碟讀取，因此檔案變更會立即反映，無須重建索引。"
     ),
-    tags=["search"],
+    tags=["content"],
 )
 def concept(concept_id: str) -> dict[str, Any]:
     _require_index()
@@ -326,7 +390,7 @@ def concept(concept_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=410, detail=str(exc)) from None
 
 
-@app.post("/feedback", summary="記錄點選回饋", tags=["search"])
+@router.post("/feedback", summary="記錄點選回饋", tags=["telemetry"])
 def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     _require_index()
     try:
@@ -342,7 +406,10 @@ def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     return {"status": "recorded", "query_id": payload.query_id}
 
 
-@app.get("/report", summary="去識別化統計報告（可安全分享）", tags=["ops"])
+@router.get("/report", summary="去識別化統計報告（可安全分享）", tags=["telemetry"])
 def report() -> dict[str, Any]:
     _require_index()
     return build_report(state.index, state.store, state.config)
+
+
+app.include_router(router)
