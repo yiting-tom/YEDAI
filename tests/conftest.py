@@ -28,6 +28,13 @@ def write_concept(
     return path
 
 
+#: 1x1 透明 PNG，讓資產測試用的是真實檔案而非空殼
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000100fd7fd0ff0000000049454e44ae426082"
+)
+
+
 def make_bundle(root: Path, name: str) -> Path:
     okf = root / name / "okf"
     (okf / "_assets").mkdir(parents=True, exist_ok=True)
@@ -53,8 +60,9 @@ def corpus(tmp_path: Path) -> Path:
             "tags": ["yield"],
             # 含一個懸空引用，讓關聯展開的兩條路徑都有東西可測
             "related": ["cpt_body-hit", "cpt_sibling", "cpt_ghost"],
+            "assets": ["_assets/slide_001.png", "_assets/notes.bin"],
         },
-        body="## 現象\n\n這裡沒有關鍵詞。\n",
+        body="## 現象\n\n這裡沒有關鍵詞。\n\n## Citations\n\n[1] [slide 1](_assets/slide_001.png)\n",
     )
     # 相同關鍵詞只出現在內文
     write_concept(
@@ -84,6 +92,11 @@ def corpus(tmp_path: Path) -> Path:
         frontmatter={"title": "QDN-01 VOID 專案", "description": "罕見實體"},
         body="## 現象\n\nQDN-01 觀察到 VOID。\n",
     )
+    # 真實資產檔
+    (okf / "_assets" / "slide_001.png").write_bytes(PNG)
+    (okf / "_assets" / "notes.bin").write_bytes(b"\x00\x01binary-asset")
+    # 誘餌：在 bundle 內但不在 _assets 之下，白名單必須擋住它
+    (okf / "not-an-asset.txt").write_text("這個檔案不該經由資產端點被讀到", encoding="utf-8")
     return root
 
 

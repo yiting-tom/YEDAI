@@ -250,6 +250,67 @@ def test_grep_scope_from_search_results(client) -> None:
     assert r.json()["results"]
 
 
+def test_asset_download(client) -> None:
+    from .conftest import PNG
+
+    r = client.get("/concept/cpt_title-hit/asset", params={"path": "_assets/slide_001.png"})
+    assert r.status_code == 200
+    assert r.content == PNG
+    assert r.headers["content-type"] == "image/png"
+    assert r.headers["content-disposition"].startswith("inline;")
+
+
+def test_asset_from_declared_assets_array(client) -> None:
+    """agent 的實際用法：/concept 取 assets → 逐項下載。"""
+    declared = client.get("/concept/cpt_title-hit").json()["assets"]
+    assert declared
+    for rel in declared:
+        r = client.get("/concept/cpt_title-hit/asset", params={"path": rel})
+        assert r.status_code == 200, rel
+
+
+def test_asset_unknown_media_type(client) -> None:
+    r = client.get("/concept/cpt_title-hit/asset", params={"path": "_assets/notes.bin"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/octet-stream"
+
+
+def test_asset_download_flag_sets_attachment(client) -> None:
+    r = client.get(
+        "/concept/cpt_title-hit/asset",
+        params={"path": "_assets/slide_001.png", "download": "true"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-disposition"].startswith("attachment;")
+    assert "slide_001.png" in r.headers["content-disposition"]
+
+
+def test_asset_traversal_is_403(client) -> None:
+    for bad in ["../../../../etc/passwd", "_assets/../not-an-asset.txt", "/etc/passwd"]:
+        r = client.get("/concept/cpt_title-hit/asset", params={"path": bad})
+        assert r.status_code == 403, bad
+
+
+def test_asset_outside_asset_dirs_is_403(client) -> None:
+    r = client.get("/concept/cpt_title-hit/asset", params={"path": "not-an-asset.txt"})
+    assert r.status_code == 403
+    assert "_assets" in r.json()["detail"]
+
+
+def test_asset_missing_file_is_404(client) -> None:
+    r = client.get("/concept/cpt_title-hit/asset", params={"path": "_assets/nope.png"})
+    assert r.status_code == 404
+
+
+def test_asset_unknown_concept_is_404(client) -> None:
+    r = client.get("/concept/cpt_nope/asset", params={"path": "_assets/slide_001.png"})
+    assert r.status_code == 404
+
+
+def test_asset_missing_path_param_is_422(client) -> None:
+    assert client.get("/concept/cpt_title-hit/asset").status_code == 422
+
+
 def test_openapi_lists_all_endpoints(client) -> None:
     paths = client.get("/openapi.json").json()["paths"]
     assert {
@@ -261,6 +322,7 @@ def test_openapi_lists_all_endpoints(client) -> None:
         "/concept/{concept_id}",
         "/concepts",
         "/concept/{concept_id}/neighbors",
+        "/concept/{concept_id}/asset",
         "/grep",
     } <= set(paths)
 

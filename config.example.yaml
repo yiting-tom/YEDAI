@@ -40,6 +40,13 @@ fusion_entity: 0.6
 #   - 'cpt_[0-9A-Za-z]+'
 #   - '[A-Za-z]{2,6}[-_]\d{1,5}'
 
+# --- 資產 ---
+# 允許透過 /concept/{id}/asset 讀取的目錄名稱。這是安全白名單：
+# 只有位於這些名稱的目錄之下的檔案才取得到，其餘一律 403。
+# 服務期政策，改了不需要重建索引。
+asset_dirs:
+  - _assets
+
 # --- 路徑 ---
 index_path: .index/yedai.pkl
 log_dir: logs

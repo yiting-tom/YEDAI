@@ -252,6 +252,40 @@ grep 等於留一條繞過檢索層的退路，那會讓整套系統回到原點
 
 ---
 
+## Level 1 — 階段五：取回資產
+
+`GET /concept/{id}/asset?path=`（`api.py` → `assets.resolve_asset`）
+
+```mermaid
+flowchart TB
+  A0(["concept_id + 相對路徑"]) --> A1{"index.by_id 存在？"}
+  A1 -->|否| A404(["404 ConceptNotFound"])
+  A1 --> D1{"防線 1：早期拒絕<br/>空路徑 / 絕對路徑 / 含 .. / 磁碟機前綴"}
+  D1 -->|命中| A403(["403 AssetForbidden"])
+  D1 --> A2["以 concept 檔案所在目錄為基準解析<br/>resolve() 展開 symlink"]
+  A2 --> D2{"防線 2：容器檢查<br/>是否位於 bundle 根目錄之下？"}
+  D2 -->|否| A403
+  D2 --> D3{"防線 3：白名單<br/>是否位於 asset_dirs 之下？"}
+  D3 -->|否| A403
+  D3 --> A3{"檔案存在？"}
+  A3 -->|否| A404b(["404 AssetNotFound"])
+  A3 --> A4["mimetypes 判定 media type<br/>不做內容嗅探"]
+  A4 --> A5(["串流回傳<br/>預設 inline，download=true 為 attachment"])
+```
+
+這是整個 API 裡**唯一路徑直接來自呼叫端**的地方——`concept_id` 有索引可查，
+路徑是系統自己組的；資產路徑不是。所以路徑穿越在這裡是實際風險，不是理論風險。
+
+| 防線 | 擋什麼 | 性質 |
+|---|---|---|
+| 1 早期拒絕 | `..`、絕對路徑、`C:/`、空路徑 | 便宜，不碰檔案系統 |
+| 2 容器檢查 | 逸出 bundle（含 symlink 逸出） | **安全邊界** |
+| 3 目錄白名單 | bundle 內但不在 `_assets` 之下的檔案 | 縱深防禦，避免退化成任意檔案讀取 |
+
+`asset_dirs` 是**服務期政策**，不進索引簽章——改一個安全設定不該迫使 220 萬 concept 重建索引。
+
+---
+
 ## 完整迴路
 
 ```mermaid
@@ -306,6 +340,7 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 | 資料 | 位置 | 機密 | 版控 |
 |---|---|---|---|
 | OKF bundle 原檔 | 使用者指定路徑 | ✅ | ❌ gitignore |
+| 資產（圖片） | `<bundle>/okf/_assets/` | ✅ | ❌ gitignore |
 | 索引快取 | `.index/*.pkl` | ✅（含 title/description） | ❌ gitignore |
 | 完整查詢日誌 | `logs/queries.jsonl` | ✅（含查詢原文） | ❌ gitignore |
 | 點選回饋 | `logs/feedback.jsonl` | ⚠️（含 concept_id） | ❌ gitignore |
@@ -324,6 +359,7 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 | 缺口 | 影響 |
 |---|---|
 | **三欄並排 Web UI** | Swagger 沒有可點的結果列表，`/feedback` 實際上收不到人的點選資料——而那是最有價值的隱性相關性標註 |
+| **MCP 的圖片工具** | agent 拿得到圖的 URL 與文字圖說，但看不到圖本身。以 YED 語料而言這個缺口不小——wafer map 與缺陷影像是證據本身 |
 | 寫入路徑（propose / amend / retire） | agent 只能讀，無法把發現回饋成新的 concept |
 | `neighbors` 依 type 過濾 | 高連通度語料上兩跳可能回傳過多 |
 | 結果快取 | 每次 `grep` 都重讀磁碟；本規模下不構成瓶頸 |

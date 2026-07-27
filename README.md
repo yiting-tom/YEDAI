@@ -75,6 +75,7 @@ uv run yedai serve -c config.local.yaml
 | `GET /concept/{concept_id}` | 取回單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
 | `POST /concepts` | 批次取全文（最多 50 筆，部分成功語意） |
 | `GET /concept/{concept_id}/neighbors` | 沿 `related` 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
+| `GET /concept/{concept_id}/asset?path=` | 下載該 concept 引用的資產（`_assets/*.png` 等），預設 inline |
 | `GET /grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
 | `POST /feedback` | 記錄點選；`query_id` 來自 `/search` 回應 |
 | `GET /stats` | 語料統計與索引狀態 |
@@ -122,6 +123,22 @@ search（縮範圍、取菜單）
 
 **`grep` 必須先有範圍。** 允許無範圍搜尋等於留一條繞過檢索層的退路——agent 會用它，
 然後我們回到「掃三十 GB、拿回三百條命中、無從分流」的原點。範圍取自 `search` 結果的 `bundle_id`。
+
+### 圖怎麼拿
+
+`/concept/{id}` 回傳的 `assets` 陣列可以直接餵給資產端點：
+
+```bash
+curl "$B/concept/$CID" | jq -r '.assets[]' \
+  | while read p; do curl -sO "$B/concept/$CID/asset?path=$(jq -rn --arg x "$p" '$x|@uri')"; done
+```
+
+路徑以**該 concept 檔案所在目錄**為基準解析，和 markdown 相對連結、`## Citations`
+的寫法完全一致，不用轉換。對 YED 語料這很重要——wafer map 與缺陷影像是證據本身，
+文字圖說只是包裝。
+
+安全上有三道約束：不接受絕對路徑與 `..`、必須在該 bundle 根目錄之下、
+且必須在 `asset_dirs`（預設 `_assets`）之下。違反者一律 403。
 
 ### 全文的兩個性質
 

@@ -85,6 +85,8 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 索引 MUST 額外保存 `concept_id` 至文件位置的對照，以及各 bundle 識別碼至其根目錄的登錄，使任一 concept 的檔案位置可在不掃描語料的情況下被定位。bundle 根目錄 MUST 以 bundle 為單位登錄，不得逐筆重複儲存於每個 concept 的中繼資料中。
 
+索引 MUST 保存 concept 之間的 `related` 關聯邊，出向與入向皆須可直接查詢；入向邊 MUST 於建立索引時計算完成。指向語料中不存在 concept 的關聯條目 MUST 被保留為懸空引用，不得靜默丟棄。
+
 索引 MUST 帶有格式版本；載入版本不符的索引時 SHALL 明確報錯並要求重建，不得靜默接受。
 
 #### Scenario: 建立索引後快取
@@ -111,6 +113,16 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 取得某 concept 的 `bundle_id` 與相對路徑
 - **THEN** 可由索引中的 bundle 根目錄登錄組合出該檔案的絕對路徑
+
+#### Scenario: 關聯邊雙向可查
+
+- **WHEN** concept A 的 `related` 指向 concept B
+- **THEN** 索引中 A 的出向邊含 B，且 B 的入向邊含 A
+
+#### Scenario: 懸空關聯被保留
+
+- **WHEN** 某 concept 的 `related` 指向語料中不存在的 id
+- **THEN** 該 id 被記錄為懸空引用，並計入語料統計
 
 #### Scenario: 舊格式索引被拒絕
 

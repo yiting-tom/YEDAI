@@ -36,8 +36,9 @@ def test_returns_parsed_frontmatter_and_sections(index) -> None:
     data = load_concept(index, "cpt_title-hit")
     assert data["frontmatter"]["id"] == "cpt_title-hit"
     assert data["frontmatter"]["title"] == "XTR-05 PARTICLE 調查"
-    assert [s["heading"] for s in data["sections"]] == ["現象"]
+    assert [s["heading"] for s in data["sections"]] == ["現象", "Citations"]
     assert data["tags"] == ["yield"]
+    assert data["assets"] == ["_assets/slide_001.png", "_assets/notes.bin"]
 
 
 def test_identity_fields_match_search_results(index, searcher) -> None:

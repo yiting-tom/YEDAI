@@ -44,6 +44,11 @@ class Config:
     fusion_lexical: float = 0.4
     fusion_entity: float = 0.6
 
+    # --- 資產 ---
+    #: 允許透過資產端點讀取的目錄名稱。這是**服務期政策**，不進索引簽章——
+    #: 改一個安全設定不該迫使 220 萬個 concept 重建索引。
+    asset_dirs: list[str] = field(default_factory=lambda: ["_assets"])
+
     # --- 路徑 ---
     index_path: str = ".index/yedai.pkl"
     log_dir: str = "logs"
@@ -97,6 +102,10 @@ class Config:
             raise ValueError("fusion weights must be >= 0")
         if self.fusion_lexical + self.fusion_entity <= 0:
             raise ValueError("fusion weights must not both be zero")
+        if not self.asset_dirs:
+            raise ValueError("asset_dirs must not be empty — 留空等於關閉資產端點，請明確設定")
+        if any("/" in d or "\\" in d or d in ("", ".", "..") for d in self.asset_dirs):
+            raise ValueError("asset_dirs 必須是單純的目錄名稱，不可含路徑分隔符")
 
     # ------------------------------------------------------------------
 

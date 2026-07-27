@@ -162,7 +162,8 @@ identifier_patterns:
 ### 不必重建（查詢期才套用）
 
 `k1`、`b`、`field_weights`、`fusion_lexical` / `fusion_entity`、`require_entities`、
-`top_k`、`seed`。**所以調權重做敏感度測試不需要重建索引**，改 config 直接重跑查詢即可。
+`top_k`、`seed`、`asset_dirs`。後者是**服務期政策**（資產端點的安全白名單），
+改一個安全設定不該迫使整份語料重建索引。**所以調權重做敏感度測試不需要重建索引**，改 config 直接重跑查詢即可。
 
 ### ⚠️ 編輯內容的不同步陷阱
 

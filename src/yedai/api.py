@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .assets import AssetForbidden, AssetNotFound, guess_media_type, resolve_asset
 from .config import Config
 from .fulltext import (
     MAX_BATCH,
@@ -141,6 +144,7 @@ def stats() -> dict[str, Any]:
         "entities_total": s.entities_total,
         "entities_from_dictionary": s.entities_dict,
         "entities_from_regex_fallback": s.entities_regex,
+        "dangling_related": s.dangling_related,
         "parse_skipped": s.parse_skipped,
         "parse_warnings": s.parse_warnings,
         "types": s.types,
@@ -194,8 +198,49 @@ def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
     }
 
 
-# 這條路由必須宣告在 /concept/{concept_id:path} 之前——path 轉換器會吃掉整個
+# 這兩條路由必須宣告在 /concept/{concept_id:path} 之前——path 轉換器會吃掉整個
 # 尾段，先宣告的規則先比對，順序反了會讓 concept_id 變成 "xxx/neighbors"。
+@app.get(
+    "/concept/{concept_id:path}/asset",
+    summary="下載 concept 引用的資產",
+    description=(
+        "取回 concept 引用的資產檔案（`_assets/slide_xxx.png` 等）。\n\n"
+        "`path` 直接使用 `/concept/{id}` 回傳的 `assets` 陣列中的值——"
+        "它以**該 concept 檔案所在目錄**為基準解析，與 markdown 相對連結、"
+        "`## Citations` 的寫法完全一致，不需要任何轉換。\n\n"
+        "預設以 `inline` 回傳，瀏覽器可直接顯示（看 wafer map 用）；"
+        "`download=true` 改為附件下載。\n\n"
+        "路徑受三道約束：不接受絕對路徑與 `..`、必須位於該 bundle 根目錄之下、"
+        "且必須位於設定允許的資產目錄（預設 `_assets`）之下。違反者回 403。"
+    ),
+    response_class=FileResponse,
+    tags=["search"],
+)
+def asset(
+    concept_id: str,
+    path: str = Query(..., min_length=1, description="相對於 concept 檔案的資產路徑"),
+    download: bool = Query(False, description="true 則以附件下載，否則內嵌顯示"),
+) -> FileResponse:
+    _require_index()
+    try:
+        resolved = resolve_asset(state.index, concept_id, path, state.config.asset_dirs)
+    except ConceptNotFound:
+        raise HTTPException(status_code=404, detail=f"unknown concept_id: {concept_id}") from None
+    except AssetForbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except (AssetNotFound, ConceptFileMissing) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+    # filename* 用 RFC 5987 編碼，中文檔名才不會破壞標頭
+    quoted = quote(resolved.name)
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        resolved,
+        media_type=guess_media_type(resolved),
+        headers={"content-disposition": f"{disposition}; filename*=UTF-8''{quoted}"},
+    )
+
+
 @app.get(
     "/concept/{concept_id:path}/neighbors",
     summary="展開 concept 關聯",

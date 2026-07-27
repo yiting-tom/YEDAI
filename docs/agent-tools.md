@@ -102,6 +102,21 @@ search（縮範圍、取菜單）
 
 正則預設關閉：使用者提供的正則可能觸發災難性回溯，而 Python 的 `re` 沒有執行時間上限。
 
+### 資產（圖片）
+
+**MCP 目前沒有對應工具**——資產是二進位，需要以 `ImageContent` 回傳，那是另一個變更。
+目前只能走 HTTP：
+
+```
+GET /concept/{concept_id}/asset?path=<assets 陣列中的值>
+```
+
+`get_concept` / `get_concepts` 回傳的 `assets` 陣列與 `figures[].description`
+已經給了 agent 圖的位置與模型寫的圖說。要真正看到圖，需要人或另一個管道去取這個 URL。
+
+以 YED 語料而言這個限制值得注意：平均每個 concept 有 7 張圖，
+而 wafer map、缺陷影像、趨勢圖是**證據本身**，文字圖說只是包裝。
+
 ### `stats`
 
 語料統計：bundle 數、concept 數、type 分佈、詞彙量、實體覆蓋率、懸空關聯數、解析失敗數。
@@ -150,6 +165,7 @@ uv run yedai serve -c config.local.yaml     # http://127.0.0.1:8000/docs
 | `neighbors` | `GET /concept/{concept_id}/neighbors?depth=&direction=` |
 | `grep` | `GET /grep?pattern=&bundle_id=&regex=` |
 | `stats` | `GET /stats` |
+| （無對應工具） | `GET /concept/{concept_id}/asset?path=` |
 
 HTTP 額外有 `POST /feedback`（點選回饋）與 `GET /report`（去識別化統計報告），
 那兩個是給量測用的，不在 agent 工具集裡。
@@ -166,3 +182,4 @@ HTTP 額外有 `POST /feedback`（點選回饋）與 `GET /report`（去識別�
 | context 爆掉 | 一次拉太多全文 | 先 `include_raw=false` 看結構，再挑要讀的 |
 | 檢索抓錯機台 | 用了 `mode=A` | 一般用途用 `mode=C` |
 | `related` 指向的 concept 取不到 | 那是懸空引用 | 看回應的 `dangling`，那些 id 在語料中不存在 |
+| 資產下載回 403 | 路徑違反約束 | 直接用 `assets` 陣列裡的值；別自己拼路徑或用 `..` |

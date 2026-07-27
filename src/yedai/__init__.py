@@ -4,6 +4,7 @@
 並用 A/B/C 三組消融回答：識別碼到底需不需要特別處理？
 """
 
+from .assets import AssetForbidden, AssetNotFound, guess_media_type, resolve_asset
 from .config import FIELDS, Config
 from .entities import EntityDictionary, EntityExtractor, EntityHit
 from .fulltext import (
@@ -28,6 +29,8 @@ __version__ = "0.1.0"
 __all__ = [
     "FIELDS",
     "MODES",
+    "AssetForbidden",
+    "AssetNotFound",
     "Bundle",
     "Concept",
     "ConceptFileMissing",
@@ -53,10 +56,12 @@ __all__ = [
     "build_index",
     "build_report",
     "grep",
+    "guess_media_type",
     "load_bundles",
     "load_concept",
     "load_concepts",
     "neighbors",
     "normalise_identifier",
+    "resolve_asset",
     "__version__",
 ]
