@@ -1,0 +1,50 @@
+# yedai 設定範例。複製為 config.local.yaml 後修改（該檔名已被 gitignore）。
+# 未列出的鍵會使用內建預設值。
+
+# --- BM25F ---
+k1: 1.2
+b: 0.75
+
+# 欄位權重。這些數字是猜的起點，實驗就是要用來修正它們。
+field_weights:
+  title: 3.0
+  description: 2.0
+  tags: 2.0
+  headings: 1.5
+  figures: 1.5
+  body: 1.0
+
+# --- 實體字典（模式 C）---
+# 未提供時模式 C 退化為純 regex 抽取的識別碼匹配。
+dictionary_path: dictionary.example.yaml
+
+entity_field_weights:
+  title: 3.0
+  description: 2.0
+  tags: 2.0
+  headings: 2.0
+  figures: 1.5
+  body: 1.0
+
+# 開啟後模式 C 只回傳含查詢中「所有」實體的 concept。預設關閉。
+require_entities: false
+
+# --- 模式 C 的兩腿融合權重 ---
+# 依討論結論偏向實體腿；改這裡就能做權重敏感度測試。
+fusion_lexical: 0.4
+fusion_entity: 0.6
+
+# --- 識別碼樣式 ---
+# 覆寫這份清單就會完全取代預設樣式。留空則沿用內建。
+# identifier_patterns:
+#   - 'cpt_[0-9A-Za-z]+'
+#   - '[A-Za-z]{2,6}[-_]\d{1,5}'
+
+# --- 路徑 ---
+index_path: .index/yedai.pkl
+log_dir: logs
+
+# --- 其他 ---
+top_k: 10
+# 固定隨機種子可讓三模式並排的呈現順序可重現（測試用）
+seed: null

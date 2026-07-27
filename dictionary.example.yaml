@@ -1,0 +1,43 @@
+# 實體字典範例。
+#
+# 格式：<實體類型> → 條目清單。條目可以是物件（含 canonical 與 aliases）或純字串。
+# 所有別名在比對前都會正規化（移除 - _ 空白、轉大寫），因此 TEL-05 / TEL05 / tel 05
+# 不需要各自列出；只有「拼法不同」的別名（縮寫、中文俗稱）才需要寫進 aliases。
+#
+# 字典是選填的。未提供時模式 C 會退化為純 regex 抽取，
+# 報告中的 dict / regex 比例會直接告訴你字典的覆蓋率缺口有多大。
+
+tool_id:
+  - canonical: XTR-05
+    aliases: [五號機]
+  - canonical: XTR-06
+    aliases: [六號機]
+  - canonical: LMB-11
+  - canonical: LMB-12
+
+chamber:
+  - canonical: PM1
+  - canonical: PM2
+  - canonical: PM3
+
+process_id:
+  - canonical: P-M1ETCH
+    aliases: [M1 蝕刻, M1etch]
+  - canonical: P-M2CMP
+    aliases: [M2 研磨]
+
+flow_id:
+  - canonical: FL-A100
+  - canonical: FL-A101
+
+defect_code:
+  - canonical: PARTICLE
+    aliases: [particle, 微粒, 顆粒]
+  - canonical: SCRATCH
+    aliases: [scratch, 刮傷]
+  - canonical: BRIDGE
+    aliases: [bridge, 短橋]
+  - canonical: RESIDUE
+    aliases: [residue, 殘留]
+  - canonical: VOID
+    aliases: [void, 空洞]

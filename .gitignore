@@ -1,0 +1,37 @@
+# 真實 OKF 語料絕不進版控
+data/
+bundles/
+corpus/
+
+# 索引快取與查詢日誌（完整日誌含查詢原文，不可外流）
+.index/
+logs/
+
+# 合成語料輸出
+synthetic/
+.synthetic/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# 本機設定覆寫
+config.local.yaml
+dictionary.local.yaml
+
+# OS
+.DS_Store
+
+# 瀏覽器自動化測試產物
+.playwright-mcp/
+docs-e2e.png
+
+# Claude Code 本機設定
+.claude/settings.local.json
