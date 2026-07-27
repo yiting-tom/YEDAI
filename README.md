@@ -23,6 +23,14 @@
 
 ---
 
+## 文件
+
+| | |
+|---|---|
+| [docs/data-flow.md](docs/data-flow.md) | 資料流圖（DFD）+ 計分公式 + 資料存放位置 |
+| [docs/indexing.md](docs/indexing.md) | 如何建立索引、統計數字怎麼看、何時必須重建 |
+| [openspec/specs/](openspec/specs/) | 規格（需求與情境） |
+
 ## 安裝
 
 ```bash
