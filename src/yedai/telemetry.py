@@ -26,6 +26,19 @@ QUERY_LOG = "queries.jsonl"
 FEEDBACK_LOG = "feedback.jsonl"
 
 
+def _type_coverage(etype: str, counts: dict[str, int], measurable: set[str]) -> float | None:
+    """只有分母可測的類型才給比例，其餘給 `null`。
+
+    分母可測的條件：該類型的每一次出現都必然被宣告了該類型的樣式圈到。
+    不成立時（機台、批號可以裸寫，缺陷名只有字典認得），未覆蓋的部分根本沒被算進分母，
+    算出來的比例會恆為 1.0——那等於宣稱「字典已完整覆蓋」。偏誤的方向是「不必維護字典」，
+    正好是最不該誤導使用者的方向。`null` 是誠實的答案：我們不知道。
+    """
+    if etype not in measurable or not counts.get("total"):
+        return None
+    return round(counts["dict"] / counts["total"], 4)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -192,6 +205,7 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
 
     # --- 實體覆蓋率（只有數量與比例，沒有任何實體名稱）---
     total_ent = stats.entities_total
+    measurable = set(stats.shape_complete_types or ())
     entity_corpus = {
         "distinct_entities": total_ent,
         "from_dictionary": stats.entities_dict,
@@ -200,14 +214,12 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
         # 全域比例把兩種相反的作用平均掉了，只有這層拆解能解讀。
         # 鍵是類型名稱（schema），不是正規名稱（語料內容）。
         "by_type": {
-            etype: {
-                **counts,
-                "dictionary_coverage": (
-                    round(counts["dict"] / counts["total"], 4) if counts["total"] else None
-                ),
-            }
+            etype: {**counts, "dictionary_coverage": _type_coverage(etype, counts, measurable)}
             for etype, counts in (stats.entities_by_type or {}).items()
         },
+        #: 哪些類型的比例算得出來，一併寫進報告——否則讀報告的人無從判斷
+        #: 一個 `null` 是「沒有這種實體」還是「分母不可測」。
+        "coverage_measurable_types": sorted(measurable),
     }
 
     # --- 查詢 ---

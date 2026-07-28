@@ -60,7 +60,7 @@ def test_find_identifiers_expands_in_step_with_protected() -> None:
     # 只改一邊會讓詞彙腿認得父層、實體腿不認得，而那種分歧會被誤讀成「實體腿沒有用」
     tok = Tokenizer()
     from_protected = {t[3:] for t in tok.protected("aepol1#pm1") if t.startswith("ID:")}
-    from_idents = {norm for _raw, norm, _s, _e in tok.find_identifiers("aepol1#pm1")}
+    from_idents = {h.normalised for h in tok.find_identifiers("aepol1#pm1")}
     assert from_protected == from_idents == {"AEPOL1#PM1", "AEPOL1"}
 
 

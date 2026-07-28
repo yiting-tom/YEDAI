@@ -77,7 +77,30 @@ flow_id:
 縮寫、中文俗稱、以及空白分隔的寫法。
 
 沒有字典也能跑——模式 C 會退化成純 regex 抽取，報告裡的
-`entities.by_type` 會直接告訴你每一類的覆蓋率缺口有多大。
+`entities.by_type` 會告訴你每一類的覆蓋率缺口有多大。
+
+### 哪些類型的覆蓋率算得出來
+
+實體類型多半只有字典能給。但有三種形狀本身就唯一決定了類型，字典外的實體也認得出來：
+
+| 形狀 | 類型 | 父層 |
+|---|---|---|
+| `機台#腔體` | `chamber_id` | `tool_id` |
+| `xxxxxx.00` | `lot` | `lot`（批底） |
+| `xxxxxx.NN` | `wafer` | `lot`（批底） |
+| `ddd.ddd` | `op_no` | 無（純數字不展開） |
+
+其餘樣式（`XTR-05` 這類）的形狀被機台、製程、流程、料號共用，**刻意不宣告類型**——
+猜一個填上去會讓覆蓋率拿到一個自信而錯誤的分母，那比沒有分母更難察覺。
+
+因此 `dictionary_coverage` 只在**分母可測**時給值，否則為 `null`：
+
+- **`chamber_id` / `wafer` / `op_no`** —— 每一次出現都必然被樣式圈到，比例是真的
+- **`tool_id` / `lot`** —— 可以裸寫（`AEPOL1`、`AB1234`），分母只是下界，給 `null`
+- **`defect_code` 等一般詞** —— 只有字典認得，分母恆等於分子，給 `null`
+
+報告的 `entities.coverage_measurable_types` 會列出當次實際可測的類型。它由**當時那組
+樣式**導出而非寫死——換掉 `identifier_patterns` 時，能不能算比例也跟著變。
 
 ### 直接吃 MES 匯出的 CSV
 
@@ -235,9 +258,10 @@ uv run yedai check-formats -c config.local.yaml
 | **改 `entity_sources` 指向的 CSV 內容** | 同上——字典指紋涵蓋 CSV 條目 |
 | 升級 `INDEX_FORMAT_VERSION` | 索引結構改變，舊檔會被拒絕 |
 
-目前的索引格式版本是 **6**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊，
+目前的索引格式版本是 **7**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊，
 v4 讓 `#` 成為識別碼的一部分並加入父子層級展開，v5 加入 op no / lot / wafer 樣式
-並讓 `#` 的父層可含 `-`，v6 修正作業序號的邊界與位數、移除 tech 樣式）。
+並讓 `#` 的父層可含 `-`，v6 修正作業序號的邊界與位數、移除 tech 樣式，
+v7 讓 regex fallback 的實體帶形狀決定的類型，實體鍵因此改變）。
 從舊版升上來時載入會被拒絕並提示重建，直接重跑 `yedai index` 即可。
 
 `entity_sources` 的**路徑**本身不進簽章——字典指紋是由實際載入的條目算出來的，

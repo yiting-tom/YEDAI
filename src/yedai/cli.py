@@ -328,7 +328,7 @@ def check_formats(config: Optional[Path] = ConfigOpt) -> None:
         )
         raise typer.Exit(2)
 
-    report = check_coverage(Tokenizer(cfg.identifier_patterns), samples)
+    report = check_coverage(Tokenizer(cfg.identifier_specs()), samples)
 
     table = Table(title="識別碼格式涵蓋率")
     table.add_column("類型")

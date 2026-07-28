@@ -111,7 +111,7 @@ class Searcher:
     ) -> None:
         self.index = index
         self.config = config
-        self.tokenizer = Tokenizer(config.identifier_patterns)
+        self.tokenizer = Tokenizer(config.identifier_specs())
         self.dictionary = (
             dictionary if dictionary is not None else EntityDictionary.from_config(config)
         )

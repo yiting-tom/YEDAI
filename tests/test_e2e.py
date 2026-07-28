@@ -54,6 +54,29 @@ def test_full_pipeline_over_synthetic_corpus(tmp_path: Path) -> None:
     assert report["feedback"]["total"] == 1
 
 
+def test_synthetic_chamber_gap_is_visible_in_the_coverage_metric(tmp_path: Path) -> None:
+    """合成語料刻意只把一半的機台腔體放進字典，就是為了讓覆蓋率缺口有東西可看。
+
+    這條測試是本次修正的迴歸點。在修正之前，`chamber_id` 的覆蓋率恆為 1.0——
+    因為類型只有字典能給，regex fallback 一律標成 `unknown`，於是缺口整整掉進
+    另一個桶裡。一個被設計來暴露缺口的量測看不見刻意為它準備的缺口，
+    與「合成語料剛好符合樣式、測試全綠」是同一種病：量測只能確認自己。
+    """
+    out = tmp_path / "s"
+    result = generate(out, n_bundles=6, seed=42)
+    config = Config(
+        dictionary_path=result["dictionary"],
+        index_path=str(tmp_path / ".index" / "gap.pkl"),
+        log_dir=str(tmp_path / "logs"),
+    )
+    index = build_index(out, config, EntityDictionary.load(config.dictionary_path))
+    report = build_report(index, TelemetryStore.create(config), config)
+
+    chamber = report["entities"]["by_type"]["chamber_id"]
+    assert chamber["regex"] > 0, "字典外的腔體必須計入 chamber_id，而不是掉進 unknown"
+    assert chamber["dictionary_coverage"] == 0.5
+
+
 def test_synthetic_output_is_reproducible(tmp_path: Path) -> None:
     a = tmp_path / "a"
     b = tmp_path / "b"

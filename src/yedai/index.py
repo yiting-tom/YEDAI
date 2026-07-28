@@ -25,7 +25,10 @@ from .tokenizer import Tokenizer
 #: 5：新增 op no / lot / wafer / tech 樣式，且 `#` 的父層允許含 `-`（`XTR-05#PM1`）。
 #: 6：作業序號補上前置 `\b` 並放寬位數（真實樣本有 5 碼）；移除 tech 樣式
 #:    （真實形狀前綴與位數皆不固定，只涵蓋一部分比完全不涵蓋更糟）。
-INDEX_FORMAT_VERSION = 6
+#: 7：regex fallback 的實體帶「形狀決定的類型」，實體鍵因此改變
+#:    （`unknown:TSK04#PM3` → `chamber_id:TSK04#PM3`）。查詢端與文件端同步改變，
+#:    比對結果不變；改的是覆蓋率統計看不看得見缺口。
+INDEX_FORMAT_VERSION = 7
 N_FIELDS = len(FIELDS)
 
 
@@ -219,6 +222,9 @@ class CorpusStats:
     entities_regex: int = 0
     #: 實體類型 → {total, dict, regex}。全域數字保留，但只有拆解過的數字能解讀。
     entities_by_type: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: 分母可測的類型——建索引當時那組樣式涵蓋了它的每一次出現。
+    #: 只有這些類型能算覆蓋率比例；跟著索引一起存，數字才追溯得回它成立的前提。
+    shape_complete_types: list[str] = field(default_factory=list)
     parse_skipped: int = 0
     parse_warnings: int = 0
     #: `related` 指向語料中不存在的 id 的總筆數。模型產出的 concept，這個數字本身
@@ -293,7 +299,7 @@ def build_index(
     dictionary: EntityDictionary | None = None,
 ) -> Index:
     dictionary = dictionary if dictionary is not None else EntityDictionary.from_config(config)
-    tokenizer = Tokenizer(config.identifier_patterns)
+    tokenizer = Tokenizer(config.identifier_specs())
     extractor = EntityExtractor(dictionary, tokenizer)
     entity_weights = config.entity_weight_vector()
 
@@ -356,6 +362,7 @@ def build_index(
         entities_dict=coverage["dict"],
         entities_regex=coverage["regex"],
         entities_by_type=index.entities.coverage_by_type(),
+        shape_complete_types=sorted(tokenizer.shape_complete_types),
         parse_skipped=len(report.skipped),
         parse_warnings=len(report.warnings),
         dangling_related=dangling_total,

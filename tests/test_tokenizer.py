@@ -54,5 +54,5 @@ def test_custom_patterns_replace_defaults() -> None:
 def test_find_identifiers_reports_spans() -> None:
     tok = Tokenizer()
     found = tok.find_identifiers("機台 XTR-05 與 QDN-01")
-    norms = {n for _raw, n, _s, _e in found}
+    norms = {h.normalised for h in found}
     assert {"XTR05", "QDN01"} <= norms

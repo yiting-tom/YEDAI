@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from .entities import CSV_SCHEMAS
-from .tokenizer import DEFAULT_IDENTIFIER_PATTERNS
+from .tokenizer import DEFAULT_IDENTIFIER_PATTERNS, IdentifierPattern, resolve_specs
 
 #: BM25F 的欄位順序。索引一旦建立就固定，變更會使快取失效。
 FIELDS: tuple[str, ...] = ("title", "description", "tags", "headings", "figures", "body")
@@ -29,6 +29,9 @@ def _default_entity_weights() -> dict[str, float]:
 @dataclass
 class Config:
     # --- 斷詞 ---
+    #: 設定檔只能給字串。類型宣告（哪些形狀唯一決定了哪個實體類型）由
+    #: `identifier_specs()` 逐條對回內建樣式取得——直接把字串丟給 Tokenizer
+    #: 會讓宣告在這裡靜靜消失，覆蓋率統計退回恆為 1.0 且不會報錯。
     identifier_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_IDENTIFIER_PATTERNS))
     #: 識別碼格式樣本檔。用 `yedai check-formats` 驗證上面那份樣式涵蓋得了真實形狀。
     #: 樣本是真實識別碼，屬敏感資料——請指向 `*-samples.local.yaml`（已被 gitignore）。
@@ -152,6 +155,10 @@ class Config:
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def identifier_specs(self) -> list[IdentifierPattern]:
+        """樣式字串 + 內建的類型宣告。建 `Tokenizer` 一律走這裡，不要直接給字串。"""
+        return resolve_specs(self.identifier_patterns)
 
     def experiment_params(self) -> dict[str, Any]:
         """寫進去識別化報告，確保任何一組數字都能被追溯回它的設定。"""

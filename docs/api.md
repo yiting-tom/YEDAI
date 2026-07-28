@@ -402,6 +402,7 @@ corpus{}            bundles / concepts / 平均長度 / 兩套詞彙量 / 詞彙
 entities{}          distinct_entities / from_dictionary / from_regex_fallback
                     / dictionary_coverage
                     / by_type{類型 → total, dict, regex, dictionary_coverage}
+                    / coverage_measurable_types[] 哪些類型的比例算得出來
 queries{}           總數 / 長度分佈 / 含實體比例 / 每查詢實體數分佈
                     / 查詢實體的 dict vs regex 來源 / query_entity_by_type
 modes{A|B|C}        queries / zero_result_rate / hit_count_distribution
@@ -419,6 +420,16 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 `entities.by_type` 是解讀 `B-C` 的前提。字典對不同類型的作用相反——對缺陷名這類
 一般詞它是唯一來源（沒有字典該腿歸零），對機台識別碼它只是擋掉 regex 誤圈的白名單。
 全域的 `dictionary_coverage` 把兩者平均成一個推不出結論的中間值。
+
+**`by_type` 的 `dictionary_coverage` 可能是 `null`，而 `null` 不代表 0。** 比例只在
+該類型的**分母可測**時給出：分母可測，指該類型的每一次出現都必然被某條宣告了它的
+識別碼樣式圈到（目前是 `chamber_id`、`wafer`、`op_no`，實際清單見同一區塊的
+`coverage_measurable_types`）。
+
+機台、批號可以裸寫（`AEPOL1`、`AB1234`），裸寫的形狀與其他類型無法區分；缺陷名更是
+只有字典認得。這些類型的分母只會是下界，算出來的比例必然偏高——極端情況下恆為 1.0，
+等於宣稱「字典已完整覆蓋」。偏誤方向正好是「不必維護字典」，所以這裡給 `null`：
+計數仍然有用（至少有這麼多實體是字典外的），但不要拿它當比例讀。
 
 無任何查詢紀錄時仍可產出，查詢相關指標為零或空。
 
@@ -440,6 +451,7 @@ vocab_naive, vocab_protected                  兩套詞彙空間各自的詞彙�
 entities_total
 entities_from_dictionary / entities_from_regex_fallback
 entities_by_type{}                            類型 → {total, dict, regex}
+                                              比例見 /v1/report，只有分母可測的類型才有
 dangling_related                              懸空關聯總數
 parse_skipped, parse_warnings
 types{}                                       type → concept 數

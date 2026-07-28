@@ -248,17 +248,21 @@ class EntityExtractor:
         hits: list[EntityHit] = []
         seen: set[tuple[str, str]] = set()
 
-        for raw, norm, _s, _e in self.tok.find_identifiers(text):
+        for hit in self.tok.find_identifiers(text):
+            norm = hit.normalised
             found = self.dict.lookup_normalised(norm)
             if found:
+                # 字典優先於形狀：字典是人維護的，形狀是從樣式推的。
                 etype, canonical = found
                 src = "dict"
             else:
-                etype, canonical, src = UNKNOWN_TYPE, norm, "regex"
+                # 形狀能決定類型時就用它——否則這個實體會掉進 `unknown`，
+                # 而該類型的覆蓋率分母就只剩字典自己，比例恆為 1.0，看不見缺口。
+                etype, canonical, src = hit.type or UNKNOWN_TYPE, norm, "regex"
             if (etype, canonical) in seen:
                 continue
             seen.add((etype, canonical))
-            hits.append(EntityHit(etype, canonical, raw, src))
+            hits.append(EntityHit(etype, canonical, hit.raw, src))
 
         for raw, etype, canonical in self.dict.literal_scan(text):
             if (etype, canonical) in seen:

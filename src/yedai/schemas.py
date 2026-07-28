@@ -271,7 +271,8 @@ class StatsOut(_Out):
     entities_from_dictionary: int
     entities_from_regex_fallback: int
     entities_by_type: dict[str, dict[str, int]] = Field(
-        description="實體類型 → {total, dict, regex}"
+        description="實體類型 → {total, dict, regex}。比例見 /v1/report——"
+        "只有分母可測的類型才有 dictionary_coverage"
     )
     dangling_related: int
     parse_skipped: int
