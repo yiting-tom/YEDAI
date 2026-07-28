@@ -17,11 +17,24 @@ import yaml
 
 from .tokenizer import Tokenizer
 
-#: 判定。`partial` 刻意與 `none` 分開——被切成兩段的識別碼看起來「有被抓到」，
-#: 但那正是模式 B 失效的形式，比完全沒抓到更容易被忽略。
+#: 判定。四種，而不是三種——因為「沒被圈成識別碼」和「被切碎」的後果差很多。
+#:
+#: full    整段被圈成單一識別碼
+#: intact  沒被圈成識別碼，但斷詞後仍是**單一完整詞元**（`A16` → `a16`）。
+#:         模式 B 相對模式 A 仍有鑑別力（A 會切成 `a` + `16`），檢索不受損；
+#:         代價只是它不會進入實體空間——若該類型有字典，字典的字面掃描會補上。
+#: partial 有比對命中但沒蓋滿整個樣本。**最危險的一種**：正則從中間咬進去，
+#:         會憑空產生一個錯的識別碼（`10234.000` → `1` + `ID:0234.000`）。
+#: none    沒被圈起來，斷詞後也碎了。
+#:
+#: 把 intact 和 partial 混為一談會讓這個工具喊太多狼——真正該修的那個就被淹掉了。
 FULL = "full"
+INTACT = "intact"
 PARTIAL = "partial"
 NONE = "none"
+
+#: 視為通過的判定。intact 通過但會被提示。
+PASSING = (FULL, INTACT)
 
 
 @dataclass(frozen=True)
@@ -33,7 +46,7 @@ class SampleResult:
 
     @property
     def ok(self) -> bool:
-        return self.verdict == FULL
+        return self.verdict in PASSING
 
 
 @dataclass
@@ -46,6 +59,11 @@ class CoverageReport:
     @property
     def failures(self) -> list[SampleResult]:
         return [r for r in self.results if not r.ok]
+
+    @property
+    def intact_only(self) -> list[SampleResult]:
+        """通過，但不會進入實體空間——該類型若沒有字典，模式 C 就看不到它們。"""
+        return [r for r in self.results if r.verdict == INTACT]
 
     @property
     def ok(self) -> bool:
@@ -83,11 +101,14 @@ def check_sample(tokenizer: Tokenizer, sample: str) -> SampleResult:
     """
     spans = tokenizer.find_identifier_spans(sample)
     tokens = tokenizer.protected(sample)
-    if not spans:
-        return SampleResult("", sample, NONE, tokens)
-    if len(spans) == 1 and spans[0] == (0, len(sample)):
-        return SampleResult("", sample, FULL, tokens)
-    return SampleResult("", sample, PARTIAL, tokens)
+    if spans:
+        if len(spans) == 1 and spans[0] == (0, len(sample)):
+            return SampleResult("", sample, FULL, tokens)
+        # 命中了但沒蓋滿：正則從中間咬進去，產出的識別碼是錯的
+        return SampleResult("", sample, PARTIAL, tokens)
+    # 沒被圈成識別碼。碎了才算失敗——完整的單一詞元在檢索上仍與模式 A 有區別。
+    verdict = INTACT if len(tokens) == 1 else NONE
+    return SampleResult("", sample, verdict, tokens)
 
 
 def check_coverage(tokenizer: Tokenizer, samples: dict[str, list[str]]) -> CoverageReport:

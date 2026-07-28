@@ -23,7 +23,9 @@ from .tokenizer import Tokenizer
 # v3：新增 related_out / related_in / dangling，使 agent 能沿 related 展開
 #: 4：識別碼支援 `#` 與父子層級展開，詞彙空間因此與 v3 不相容。
 #: 5：新增 op no / lot / wafer / tech 樣式，且 `#` 的父層允許含 `-`（`XTR-05#PM1`）。
-INDEX_FORMAT_VERSION = 5
+#: 6：作業序號補上前置 `\b` 並放寬位數（真實樣本有 5 碼）；移除 tech 樣式
+#:    （真實形狀前綴與位數皆不固定，只涵蓋一部分比完全不涵蓋更糟）。
+INDEX_FORMAT_VERSION = 6
 N_FIELDS = len(FIELDS)
 
 

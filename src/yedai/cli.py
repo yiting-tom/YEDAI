@@ -13,7 +13,7 @@ from rich.table import Table
 
 from .config import Config
 from .entities import EntityDictionary, EntitySourceError
-from .formats import FULL, NONE, PARTIAL, check_coverage, load_samples
+from .formats import FULL, INTACT, NONE, PARTIAL, check_coverage, load_samples
 from .index import Index, build_index
 from .search import MODES, ModeResult, Searcher
 from .telemetry import TelemetryStore, build_report
@@ -335,15 +335,15 @@ def check_formats(config: Optional[Path] = ConfigOpt) -> None:
     table.add_column("樣本")
     table.add_column("判定")
     table.add_column("實際詞元")
-    styles = {FULL: "green", PARTIAL: "yellow", NONE: "red"}
-    labels = {FULL: "完整", PARTIAL: "部分", NONE: "未涵蓋"}
+    styles = {FULL: "green", INTACT: "cyan", PARTIAL: "red", NONE: "red"}
+    labels = {FULL: "識別碼", INTACT: "完整詞元", PARTIAL: "咬錯", NONE: "碎裂"}
     for etype, results in report.by_type().items():
         for r in results:
             table.add_row(
                 etype,
                 r.sample,
                 f"[{styles[r.verdict]}]{labels[r.verdict]}[/{styles[r.verdict]}]",
-                "" if r.ok else " ".join(r.tokens),
+                "" if r.verdict == FULL else " ".join(r.tokens),
             )
     console.print(table)
 
@@ -353,15 +353,26 @@ def check_formats(config: Optional[Path] = ConfigOpt) -> None:
             "這不是通過——是我們不知道這些類型的樣式有沒有效。"
         )
 
+    if report.intact_only:
+        types = sorted({r.type for r in report.intact_only})
+        console.print(
+            f"\n[cyan]{len(report.intact_only)} 個樣本沒有被圈成識別碼，但詞元完整[/cyan]"
+            f"（{', '.join(types)}）。\n"
+            "檢索不受損——模式 A 會把它們切碎，模式 B 不會，鑑別力的差異仍在。\n"
+            "唯一的差別是它們不會進入實體空間，所以模式 C 看不到它們；"
+            "若該類型有字典，字典的字面掃描會補上這一塊。"
+        )
+
     if not report.ok:
         err.print(
-            f"\n[red]{len(report.failures)} 個樣本未被完整圈出。[/red]\n"
-            "被切成兩段的識別碼會失去鑑別力，讓模式 B 被低估——"
-            "而低估的方向剛好會導出「識別碼保護沒有用」這個相反的結論。"
+            f"\n[red]{len(report.failures)} 個樣本有問題。[/red]\n"
+            "「咬錯」是正則從中間比對進去、憑空產生一個錯的識別碼，比沒抓到更糟；\n"
+            "「碎裂」則讓識別碼失去鑑別力，兩者都會讓模式 B 被低估——"
+            "而低估的方向剛好導出「識別碼保護沒有用」這個相反的結論。"
         )
         raise typer.Exit(1)
 
-    console.print(f"\n[green]{len(report.results)} 個樣本全部被完整圈出。[/green]")
+    console.print(f"\n[green]{len(report.results)} 個樣本全部沒有被切碎。[/green]")
 
 
 if __name__ == "__main__":
