@@ -46,6 +46,12 @@ uv sync
 cp config.example.yaml config.local.yaml     # config.local.yaml 已被 gitignore
 cp dictionary.example.yaml dictionary.local.yaml   # 填入你的機台/製程/缺陷字典
 
+# 字典也可以直接吃 MES 匯出的 CSV（不必手工轉成 YAML，兩者可並存）：
+#   tool_id      單欄；含 `#` 的列自動歸為腔體（aepol1 / aepol1#pm1 同表）
+#   defect_code  三欄 Module, defect code, defect name；name 就是別名欄
+# 在 config.local.yaml 的 entity_sources 宣告。真實清單請命名為 *.local.csv——
+# 那個樣式已被 gitignore，而本 repo 是公開的。
+
 # 2. 建索引（bundle 根目錄 = 內含多個 bundle 子目錄的那一層）
 #    索引格式版本變更時舊快取會被拒絕載入並提示重建，直接重跑這行即可
 uv run yedai index /path/to/your/bundles -c config.local.yaml
@@ -194,8 +200,14 @@ curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
 - `B-C` 的 jaccard **低** → 字典帶來額外資訊，值得投資維護
 - `B-C` 的 jaccard **接近 1** → 停在斷詞層就好，別維護字典
 
-其次看 `entities.dictionary_coverage`：字典命中 vs regex fallback 的比例，
-直接告訴你字典的覆蓋率缺口有多大。
+其次看 `entities.by_type`——**不要只看全域的 `dictionary_coverage`**。
+
+字典對不同類型的作用是相反的：對缺陷名（`微粒`、`刮傷`）它是**唯一來源**，
+因為一般詞沒有結構可讓正則辨識，沒有字典那條腿就歸零；對機台識別碼它只是
+**擋掉 regex 誤圈的白名單**，沒有字典只是精確度差一點。
+
+全域比例把這兩者平均成一個中間值，於是「fallback 佔 60%」推不出任何結論——
+拆開之後才分得出那 60% 是集中在無所謂的類型，還是集中在字典本該覆蓋的類型。
 
 `experiment_params` 記錄了該次使用的所有參數——沒有它，任何數字都不可重現。
 
@@ -206,6 +218,9 @@ curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
 - **識別碼正則過寬**：預設樣式包含空白分隔形式（`TEL 05`），會誤圈 `slide 005`、`page 12`
   這類詞組。漏抓比誤抓危險（會讓模式 B/C 被低估、導出錯誤結論），所以預設偏向recall。
   誤圈量會顯示在報告的 `from_regex_fallback`，整份清單可用 `identifier_patterns` 覆寫。
+- **父子層級展開有代價**：`aepol1#pm1` 會同時產生腔體層與機台層詞元，讓「查機台」
+  命中只寫到腔體的文件。代價是機台層詞元變高頻、鑑別力下降——這部分由 BM25 的 idf
+  自動吸收，不需調參，但若日後發現機台層查詢過於發散，這裡是第一個該看的地方。
 - **BM25F 欄位權重是猜的**（title 3.0 / description 2.0 / body 1.0），首批真實數據回來後應調整。
 - **融合權重**預設 `lexical 0.4 / entity 0.6`，偏向實體腿。
 - **中文用 unigram + bigram**，不依賴 jieba——領域專有詞不在通用詞典裡，jieba 會切錯且錯法不可預測。

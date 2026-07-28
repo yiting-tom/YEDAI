@@ -1,0 +1,7 @@
+Module,defect code,defect name
+ETCH,PARTICLE,微粒
+ETCH,SCRATCH,刮傷
+CMP,RESIDUE,residue
+CMP,VOID,void
+PHOTO,BRIDGE,短橋
+PHOTO,COLLAPSE,Pattern Collapse 圖案倒塌

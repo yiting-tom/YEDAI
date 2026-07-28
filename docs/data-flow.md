@@ -56,7 +56,7 @@ flowchart TB
   CFG --> TOK
   P4 --> TOK["5. 斷詞"]
   TOK --> TA["Tokenizer.naive()<br/>XTR-05 → 'xtr','05'"]
-  TOK --> TB["tokenizer.protected()<br/>XTR-05 → 'ID:XTR05'"]
+  TOK --> TB["tokenizer.protected()<br/>XTR-05 → 'ID:XTR05'<br/>aepol1#pm1 → 'ID:AEPOL1#PM1' + 'ID:AEPOL1'"]
 
   DIC --> EX
   P4 --> EX["6. _concept_entities()<br/>字典命中 / regex fallback<br/><i>index.py:338</i>"]
@@ -88,6 +88,22 @@ flowchart TB
 | `EntitySpace` | 實體倒排索引 + 位置權重 | **C** 的實體腿 |
 
 三者建在**完全相同的 concept 集合**上，所以 A/B/C 的差異只來自索引方式，不來自語料。
+
+### 父子層級展開
+
+機台與腔體寫在同一個識別碼裡，以 `#` 分界（`aepol1#pm1`）。斷詞時**同時**產生
+子層與父層兩個詞元，所以查 `aepol1` 也會命中只寫到 `aepol1#pm1` 的文件：
+
+```
+aepol1#pm1  →  ID:AEPOL1#PM1     子層：與其他機台的 PM1 不混淆
+               ID:AEPOL1         父層：讓機台層查詢命中腔體層文件
+```
+
+展開只依字串結構，**不查字典**——字典覆蓋率是本實驗要量測的未知數，
+拿它當前提會讓兩個機制的效果無法分離。
+
+`Tokenizer.protected()` 與 `find_identifiers()` 必須同步展開，否則詞彙腿認得父層、
+實體腿不認得，模式 B 與模式 C 會對同一個查詢給出不一致的結果。
 
 ### 索引裡有什麼、沒有什麼
 

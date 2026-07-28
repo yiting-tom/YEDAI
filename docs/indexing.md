@@ -77,7 +77,38 @@ flow_id:
 縮寫、中文俗稱、以及空白分隔的寫法。
 
 沒有字典也能跑——模式 C 會退化成純 regex 抽取，報告裡的
-`entities.dictionary_coverage` 會直接告訴你覆蓋率缺口有多大。
+`entities.by_type` 會直接告訴你每一類的覆蓋率缺口有多大。
+
+### 直接吃 MES 匯出的 CSV
+
+真實字典多半是 CSV 而不是 YAML。要求維護者手工轉檔的結果就是字典會過期，
+所以 CSV 可以直接宣告為來源，與 YAML 並存：
+
+```yaml
+entity_sources:
+  - type: tool_id
+    path: tools.local.csv
+    schema: id_only
+    child_type: chamber_id      # 選填，預設就是 chamber_id
+  - type: defect_code
+    path: defects.local.csv
+    schema: module_code_name
+```
+
+| schema | 欄位 | 說明 |
+|---|---|---|
+| `id_only` | 單欄 | 值本身即正規名稱。含 `#` 的列自動歸入 `child_type`——機台與腔體同表，以 `#` 區分 |
+| `module_code_name` | `Module, defect code, defect name` | `code` 全域唯一為正規名稱，`name` 是別名，`Module` 只是中繼資料不進識別 |
+
+標頭列可有可無，會依已知欄名自動略過。欄位數不符會**當場報錯並指出檔名與列號**——
+靜默略過畸形列會產出一份看起來正常、實則有洞的字典，而那種洞在報告上看不出來。
+
+`defect name` 若同格中英並存（`Pattern Collapse 圖案倒塌`），兩種語言都會被註冊成別名，
+所以使用者只打其中一種也命中。多詞英文名稱不會被拆散——否則任何提到 `pattern`
+的文件都會被判定含有該缺陷。
+
+> ⚠️ 真實的機台與缺陷清單本身就是敏感資料。請命名為 `*.local.csv`，
+> 那個樣式已被 gitignore，而本 repo 是公開的。
 
 ---
 
@@ -154,10 +185,15 @@ identifier_patterns:
 | `entity_field_weights` | 實體權重在建索引時就寫死了 |
 | 修改 `related` 欄位 | 關聯邊在建索引時算好，`neighbors` 會拿到舊的圖 |
 | 換字典 / 改字典內容 | 實體倒排索引改變 |
+| **改 `entity_sources` 指向的 CSV 內容** | 同上——字典指紋涵蓋 CSV 條目 |
 | 升級 `INDEX_FORMAT_VERSION` | 索引結構改變，舊檔會被拒絕 |
 
-目前的索引格式版本是 **3**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊）。
+目前的索引格式版本是 **4**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊，
+v4 讓 `#` 成為識別碼的一部分並加入父子層級展開）。
 從舊版升上來時載入會被拒絕並提示重建，直接重跑 `yedai index` 即可。
+
+`entity_sources` 的**路徑**本身不進簽章——字典指紋是由實際載入的條目算出來的，
+已經涵蓋 CSV 內容。換個檔名但內容相同不該白白失效一次索引。
 
 ### 不必重建（查詢期才套用）
 

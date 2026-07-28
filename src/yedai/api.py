@@ -225,6 +225,9 @@ def stats() -> dict[str, Any]:
         "entities_total": s.entities_total,
         "entities_from_dictionary": s.entities_dict,
         "entities_from_regex_fallback": s.entities_regex,
+        # 依類型拆解：全域比例把「字典是唯一來源」的類型（缺陷名）與
+        # 「字典只是白名單」的類型（機台）平均在一起，數字因此無法解讀
+        "entities_by_type": s.entities_by_type,
         "dangling_related": s.dangling_related,
         "parse_skipped": s.parse_skipped,
         "parse_warnings": s.parse_warnings,

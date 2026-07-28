@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Config
-from .entities import EntityDictionary
+from .entities import EntityDictionary, EntitySourceError
 from .index import Index, build_index
 from .search import MODES, ModeResult, Searcher
 from .telemetry import TelemetryStore, build_report
@@ -34,8 +34,10 @@ def _config(path: Optional[Path]) -> Config:
 
 def _dictionary(cfg: Config) -> EntityDictionary:
     try:
-        return EntityDictionary.load(cfg.dictionary_path)
-    except FileNotFoundError as exc:
+        return EntityDictionary.from_config(cfg)
+    except (FileNotFoundError, EntitySourceError) as exc:
+        # 畸形的來源檔要當場停下來。載入一半的字典比沒有字典更糟——
+        # 模式 C 會安靜地變差，而那看起來就像「字典沒有用」。
         err.print(f"[red]字典錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
 

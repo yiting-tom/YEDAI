@@ -18,6 +18,27 @@ field_weights:
 # 未提供時模式 C 退化為純 regex 抽取的識別碼匹配。
 dictionary_path: dictionary.example.yaml
 
+# CSV 實體來源。真實字典由 MES 匯出，是 CSV 不是 YAML；
+# 要求維護者手工轉檔的結果就是字典會過期。可與上面的 YAML 並存。
+#
+# ⚠️ 真實清單屬敏感資料，請指向 *.local.csv（已被 gitignore）。
+#    下面兩個 example 檔是**編造值**，只供驗證程式行為。
+#
+# schema:
+#   id_only            單欄。值本身即正規名稱。含 `#` 的列自動歸入 child_type
+#                      （機台與腔體同表，以 `#` 區分——這是資料的性質，不是偏好）
+#   module_code_name   三欄 Module, defect code, defect name。
+#                      code 全域唯一為正規名稱；name 為別名；Module 只是中繼資料。
+#                      「微粒」「刮傷」這類一般詞正則抓不到，只有字典能對到 code。
+entity_sources:
+  - type: tool_id
+    path: tools.example.csv
+    schema: id_only
+    child_type: chamber_id      # 選填，預設 chamber_id
+  - type: defect_code
+    path: defects.example.csv
+    schema: module_code_name
+
 entity_field_weights:
   title: 3.0
   description: 2.0

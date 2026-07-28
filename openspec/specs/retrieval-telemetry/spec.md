@@ -52,7 +52,9 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 ### Requirement: 報告指標內容
 
-去識別化報告 SHALL 至少包含下列指標：語料統計（bundle 數、concept 數、平均 concept 長度、兩套詞彙空間的詞彙量、解析失敗檔數）、查詢統計（查詢次數、查詢長度分佈、含實體查詢比例、零結果率）、實體統計（不重複實體數、字典命中與 regex fallback 比例）、各模式分數分佈、模式間 top-k 重疊度（Jaccard 與 Kendall tau 的分佈）、點選排名分佈，以及該次實驗使用的設定參數。
+去識別化報告 SHALL 至少包含下列指標：語料統計（bundle 數、concept 數、平均 concept 長度、兩套詞彙空間的詞彙量、解析失敗檔數）、查詢統計（查詢次數、查詢長度分佈、含實體查詢比例、零結果率）、實體統計（不重複實體數、字典命中與 regex fallback 比例，**以及依實體類型拆解的同一組比例**）、各模式分數分佈、模式間 top-k 重疊度（Jaccard 與 Kendall tau 的分佈）、點選排名分佈，以及該次實驗使用的設定參數。
+
+依類型拆解的實體統計 MUST 僅以實體類型名稱為鍵。實體的正規名稱與原始字串 MUST NOT 出現在報告任何位置——類型名稱屬 schema，正規名稱屬語料內容，後者會使報告無法帶出受管制環境。
 
 #### Scenario: 含模式間重疊度
 
@@ -73,6 +75,16 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 尚未有任何查詢即產出報告
 - **THEN** 報告仍含語料統計，查詢相關指標為零或空，且不產生錯誤
+
+#### Scenario: 含依類型拆解的實體覆蓋率
+
+- **WHEN** 語料含多種實體類型
+- **THEN** 報告可分別讀取各類型的字典命中數與 regex fallback 數
+
+#### Scenario: 拆解結構不洩漏實體名稱
+
+- **WHEN** 產出含依類型拆解的報告
+- **THEN** 報告序列化結果中不出現任何實體的正規名稱或原始字串
 
 ### Requirement: 三模式並排時隨機化呈現順序
 

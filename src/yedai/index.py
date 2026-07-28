@@ -21,7 +21,8 @@ from .tokenizer import Tokenizer
 
 # v2：新增 by_id 與 bundle_roots，使 concept 全文可於請求時從磁碟定位
 # v3：新增 related_out / related_in / dangling，使 agent 能沿 related 展開
-INDEX_FORMAT_VERSION = 3
+#: 4：識別碼支援 `#` 與父子層級展開，詞彙空間因此與 v3 不相容。
+INDEX_FORMAT_VERSION = 4
 N_FIELDS = len(FIELDS)
 
 
@@ -182,6 +183,25 @@ class EntitySpace:
         regex_hits = sum(1 for k in self.postings if self.source.get(k) == "regex")
         return {"total": len(self.postings), "dict": dict_hits, "regex": regex_hits}
 
+    def coverage_by_type(self) -> dict[str, dict[str, int]]:
+        """依實體類型拆解的覆蓋率。
+
+        全域比例會把性質相反的兩種作用平均掉：字典對一般詞（缺陷名）是語義正規化，
+        缺了整條腿歸零；對結構化識別碼（機台）只是擋掉 regex 誤圈，缺了僅精確度下降。
+        「fallback 佔 60%」在前者是災難、在後者可能無所謂——不拆開就分不出來。
+
+        鍵是類型名稱（schema），不是正規名稱（語料內容）——報告要能帶出受管制環境。
+        """
+        out: dict[str, dict[str, int]] = {}
+        for key in self.postings:
+            etype = key.split(":", 1)[0] if ":" in key else UNKNOWN_TYPE
+            bucket = out.setdefault(etype, {"total": 0, "dict": 0, "regex": 0})
+            bucket["total"] += 1
+            src = self.source.get(key)
+            if src in ("dict", "regex"):
+                bucket[src] += 1
+        return dict(sorted(out.items()))
+
 
 @dataclass
 class CorpusStats:
@@ -194,6 +214,8 @@ class CorpusStats:
     entities_total: int = 0
     entities_dict: int = 0
     entities_regex: int = 0
+    #: 實體類型 → {total, dict, regex}。全域數字保留，但只有拆解過的數字能解讀。
+    entities_by_type: dict[str, dict[str, int]] = field(default_factory=dict)
     parse_skipped: int = 0
     parse_warnings: int = 0
     #: `related` 指向語料中不存在的 id 的總筆數。模型產出的 concept，這個數字本身
@@ -267,7 +289,7 @@ def build_index(
     config: Config,
     dictionary: EntityDictionary | None = None,
 ) -> Index:
-    dictionary = dictionary if dictionary is not None else EntityDictionary.load(config.dictionary_path)
+    dictionary = dictionary if dictionary is not None else EntityDictionary.from_config(config)
     tokenizer = Tokenizer(config.identifier_patterns)
     extractor = EntityExtractor(dictionary, tokenizer)
     entity_weights = config.entity_weight_vector()
@@ -330,6 +352,7 @@ def build_index(
         entities_total=coverage["total"],
         entities_dict=coverage["dict"],
         entities_regex=coverage["regex"],
+        entities_by_type=index.entities.coverage_by_type(),
         parse_skipped=len(report.skipped),
         parse_warnings=len(report.warnings),
         dangling_related=dangling_total,

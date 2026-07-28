@@ -37,7 +37,7 @@ class Runtime:
     ) -> Runtime:
         """明確參數 > 環境變數 > 設定檔預設值。"""
         cfg = Config.load(config_path or os.environ.get(ENV_CONFIG) or None)
-        dictionary = EntityDictionary.load(cfg.dictionary_path)
+        dictionary = EntityDictionary.from_config(cfg)
         index = Index.load(index_path or os.environ.get(ENV_INDEX) or cfg.index_path)
         index.check_signature(cfg.index_signature(dictionary.fingerprint()))
         return cls(

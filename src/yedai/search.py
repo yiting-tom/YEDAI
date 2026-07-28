@@ -113,7 +113,7 @@ class Searcher:
         self.config = config
         self.tokenizer = Tokenizer(config.identifier_patterns)
         self.dictionary = (
-            dictionary if dictionary is not None else EntityDictionary.load(config.dictionary_path)
+            dictionary if dictionary is not None else EntityDictionary.from_config(config)
         )
         self.extractor = EntityExtractor(self.dictionary, self.tokenizer)
         self._rng = random.Random(config.seed)

@@ -77,12 +77,25 @@ def _sentence(rng: random.Random) -> str:
     text = rng.choice(SENTENCES).format(
         tool=tool,
         tool2=tool2,
-        chamber=rng.choice(CHAMBERS),
+        # 腔體綁在機台上（`XTR-05#PM2`）——真實語料就是這樣寫的，機台與腔體同一個識別碼。
+        # 早期版本這裡只寫 `PM2`，於是 `#` 的處理從未被合成語料碰到過，
+        # 而斷詞器在 `#` 上是壞的卻沒有任何測試會紅。合成資料必須長得像真的，否則它只會確認既有的錯。
+        chamber=_chamber_of(tool, rng),
         process=rng.choice(PROCESSES),
         flow=rng.choice(FLOWS),
         defect=rng.choice([defect, *DEFECT_ALIASES[defect]]),
     )
     return text
+
+
+def _chamber_of(tool: str, rng: random.Random) -> str:
+    return f"{tool}#{rng.choice(CHAMBERS)}"
+
+
+#: 只有一半的機台把腔體列進字典。兩邊都要有，報告的 by_type 拆解才有東西可看——
+#: 全部命中或全部落空都無法呈現「覆蓋率缺口」長什麼樣。
+def _dictionary_chambers() -> list[str]:
+    return [f"{t}#{c}" for t in TOOLS[: len(TOOLS) // 2] for c in CHAMBERS]
 
 
 def _sibling(tool: str) -> str:
@@ -116,7 +129,7 @@ def _figures(rng: random.Random, n: int) -> list[dict]:
                 "file_id": f"slide_{i + 1:03d}",
                 "type": rng.choice(["trend_chart", "wafer_map", "sem_image", "table"]),
                 "title": f"{tool} 於 {rng.choice(PROCESSES)} 的 {defect} 分佈",
-                "description": f"呈現 {tool} 在 {rng.choice(CHAMBERS)} 的 {defect} 計數變化，涵蓋 {rng.choice(FLOWS)} 流程。",
+                "description": f"呈現 {tool} 在 {_chamber_of(tool, rng)} 的 {defect} 計數變化，涵蓋 {rng.choice(FLOWS)} 流程。",
                 "key_points": [_sentence(rng) for _ in range(rng.randint(2, 3))],
             }
         )
@@ -295,6 +308,7 @@ def _dictionary_yaml() -> str:
     data = {
         "tool_id": [{"canonical": t} for t in TOOLS],
         "chamber": [{"canonical": c} for c in CHAMBERS],
+        "chamber_id": [{"canonical": c} for c in _dictionary_chambers()],
         "process_id": [{"canonical": p} for p in PROCESSES],
         "flow_id": [{"canonical": f} for f in FLOWS],
         "defect_code": [{"canonical": d, "aliases": DEFECT_ALIASES[d]} for d in DEFECTS],

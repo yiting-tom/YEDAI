@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import Config
+from .entities import UNKNOWN_TYPE
 from .index import Index
 from .search import MODES, SearchOutcome
 
@@ -196,6 +197,17 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
         "from_dictionary": stats.entities_dict,
         "from_regex_fallback": stats.entities_regex,
         "dictionary_coverage": round(stats.entities_dict / total_ent, 4) if total_ent else None,
+        # 全域比例把兩種相反的作用平均掉了，只有這層拆解能解讀。
+        # 鍵是類型名稱（schema），不是正規名稱（語料內容）。
+        "by_type": {
+            etype: {
+                **counts,
+                "dictionary_coverage": (
+                    round(counts["dict"] / counts["total"], 4) if counts["total"] else None
+                ),
+            }
+            for etype, counts in (stats.entities_by_type or {}).items()
+        },
     }
 
     # --- 查詢 ---
@@ -203,6 +215,15 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
     q_entity_counts = [len(q.get("entities") or []) for q in queries]
     with_entity = sum(1 for c in q_entity_counts if c > 0)
     ent_sources = [e.get("source") for q in queries for e in (q.get("entities") or [])]
+    # 查詢端也要拆解：語料的覆蓋率高、但使用者實際打的那些類型覆蓋率低，是完全可能的，
+    # 而那才是真正影響檢索效果的缺口。只看語料端會漏掉它。
+    q_by_type: dict[str, dict[str, int]] = {}
+    for q in queries:
+        for e in q.get("entities") or []:
+            bucket = q_by_type.setdefault(str(e.get("type") or UNKNOWN_TYPE), {"dict": 0, "regex": 0})
+            src = e.get("source")
+            if src in ("dict", "regex"):
+                bucket[src] += 1
 
     per_mode: dict[str, Any] = {}
     for mode in MODES:
@@ -243,6 +264,7 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
         "entities_per_query_distribution": _dist(q_entity_counts),
         "query_entity_from_dictionary": sum(1 for s in ent_sources if s == "dict"),
         "query_entity_from_regex_fallback": sum(1 for s in ent_sources if s == "regex"),
+        "query_entity_by_type": dict(sorted(q_by_type.items())),
     }
 
     fb_ranks = [f.get("rank") for f in feedback if isinstance(f.get("rank"), int)]

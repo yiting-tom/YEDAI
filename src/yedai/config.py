@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from .entities import CSV_SCHEMAS
 from .tokenizer import DEFAULT_IDENTIFIER_PATTERNS
 
 #: BM25F 的欄位順序。索引一旦建立就固定，變更會使快取失效。
@@ -37,6 +38,10 @@ class Config:
 
     # --- 實體 ---
     dictionary_path: str | None = None
+    #: CSV 實體來源。每筆為 {type, path, schema, child_type?}。
+    #: 真實字典由 MES 匯出，是 CSV 不是 YAML；要求維護者手工轉檔的結果就是字典會過期。
+    #: 真實清單屬敏感資料——請指向 `*.local.csv`（已被 gitignore）。
+    entity_sources: list[dict[str, Any]] = field(default_factory=list)
     entity_field_weights: dict[str, float] = field(default_factory=_default_entity_weights)
     require_entities: bool = False
 
@@ -106,6 +111,17 @@ class Config:
             raise ValueError("asset_dirs must not be empty — 留空等於關閉資產端點，請明確設定")
         if any("/" in d or "\\" in d or d in ("", ".", "..") for d in self.asset_dirs):
             raise ValueError("asset_dirs 必須是單純的目錄名稱，不可含路徑分隔符")
+        for i, src in enumerate(self.entity_sources):
+            if not isinstance(src, dict):
+                raise ValueError(f"entity_sources[{i}] 必須是 mapping")
+            missing = [k for k in ("type", "path", "schema") if not src.get(k)]
+            if missing:
+                raise ValueError(f"entity_sources[{i}] 缺少必要欄位: {missing}")
+            if src["schema"] not in CSV_SCHEMAS:
+                raise ValueError(
+                    f"entity_sources[{i}] 的 schema {src['schema']!r} 不支援；"
+                    f"可用的有 {list(CSV_SCHEMAS)}"
+                )
 
     # ------------------------------------------------------------------
 
@@ -119,7 +135,11 @@ class Config:
         return max(self.entity_field_weights[f] for f in FIELDS)
 
     def index_signature(self, dictionary_fingerprint: str = "") -> str:
-        """只涵蓋會改變索引內容的設定；計分權重在查詢期套用，不影響快取有效性。"""
+        """只涵蓋會改變索引內容的設定；計分權重在查詢期套用，不影響快取有效性。
+
+        `entity_sources` 刻意**不**列入：字典指紋由實際載入的條目導出，
+        已經涵蓋 CSV 的內容。把路徑也放進來只會讓「換個檔名、內容相同」白白失效一次索引。
+        """
         payload = {
             "fields": list(FIELDS),
             "identifier_patterns": list(self.identifier_patterns),

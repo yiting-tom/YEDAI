@@ -77,6 +77,15 @@ def test_report_leaks_no_corpus_content(searcher, config) -> None:
         if doc.description:
             assert doc.description not in blob
 
+    # 依類型拆解的結構只能有類型名稱（schema），不能有正規名稱（語料內容）
+    by_type = report["entities"]["by_type"]
+    assert by_type, "拆解結構不該是空的，否則這條斷言等於沒測"
+    for etype in by_type:
+        assert ":" not in etype, f"類型鍵疑似夾帶了正規名稱：{etype!r}"
+    for key in searcher.index.entities.postings:
+        canonical = key.split(":", 1)[1] if ":" in key else key
+        assert canonical not in by_type
+
 
 def test_report_contains_required_metrics(searcher, config) -> None:
     store = TelemetryStore.create(config)
@@ -89,6 +98,13 @@ def test_report_contains_required_metrics(searcher, config) -> None:
     assert report["corpus"]["vocab_protected"] > 0
     assert report["entities"]["distinct_entities"] > 0
     assert report["entities"]["dictionary_coverage"] is not None
+    # 全域數字無法解讀——字典對一般詞是「有或沒有」，對識別碼只是精確度差異
+    by_type = report["entities"]["by_type"]
+    assert by_type
+    for counts in by_type.values():
+        assert counts["dict"] + counts["regex"] <= counts["total"]
+    assert sum(c["total"] for c in by_type.values()) == report["entities"]["distinct_entities"]
+    assert "query_entity_by_type" in report["queries"]
     assert report["queries"]["total_queries"] == 1
     assert set(report["mode_overlap"]) == {"A-B", "A-C", "B-C"}
     for mode in ("A", "B", "C"):

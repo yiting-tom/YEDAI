@@ -396,8 +396,9 @@ corpus{}            bundles / concepts / 平均長度 / 兩套詞彙量 / 詞彙
                     / distinct_types / type_size_distribution / parse_skipped
 entities{}          distinct_entities / from_dictionary / from_regex_fallback
                     / dictionary_coverage
+                    / by_type{類型 → total, dict, regex, dictionary_coverage}
 queries{}           總數 / 長度分佈 / 含實體比例 / 每查詢實體數分佈
-                    / 查詢實體的 dict vs regex 來源
+                    / 查詢實體的 dict vs regex 來源 / query_entity_by_type
 modes{A|B|C}        queries / zero_result_rate / hit_count_distribution
                     / top_score_distribution
 mode_overlap{}      A-B / A-C / B-C 各自的 jaccard 與 kendall_tau 分佈
@@ -409,6 +410,10 @@ experiment_params{} 該次使用的全部參數——沒有它任何數字都不
 
 **最關鍵的欄位是 `mode_overlap`**：A-B 的 jaccard 接近 1 代表斷詞層沒有作用、
 B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md#怎麼讀報告)。
+
+`entities.by_type` 是解讀 `B-C` 的前提。字典對不同類型的作用相反——對缺陷名這類
+一般詞它是唯一來源（沒有字典該腿歸零），對機台識別碼它只是擋掉 regex 誤圈的白名單。
+全域的 `dictionary_coverage` 把兩者平均成一個推不出結論的中間值。
 
 無任何查詢紀錄時仍可產出，查詢相關指標為零或空。
 
@@ -428,6 +433,7 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 bundles, concepts, avg_concept_chars, avg_figures_per_concept
 vocab_naive, vocab_protected                  兩套詞彙空間各自的詞彙量
 entities_total / from_dictionary / from_regex_fallback
+entities_by_type{}                            類型 → {total, dict, regex}
 dangling_related                              懸空關聯總數
 parse_skipped, parse_warnings
 types{}                                       type → concept 數

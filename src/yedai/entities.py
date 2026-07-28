@@ -18,16 +18,52 @@ regex 這條是刻意保留的：它會告訴你字典的覆蓋率缺口有多�
 
 from __future__ import annotations
 
+import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
-from .tokenizer import Tokenizer, normalise_identifier
+from .tokenizer import (
+    CJK,
+    HIERARCHY_SEP,
+    Tokenizer,
+    language_segments,
+    normalise_identifier,
+)
 
 UNKNOWN_TYPE = "unknown"
+
+#: `id_only` 來源中含層級分隔符的列，歸入這個類型。
+#: 這是資料本身的性質（機台與腔體同表、以 `#` 區分），不是使用者偏好，
+#: 所以給預設值而非強迫每份設定重寫一次；需要時仍可在來源宣告中覆寫。
+DEFAULT_CHILD_TYPE = "chamber_id"
+
+CSV_SCHEMAS: tuple[str, ...] = ("id_only", "module_code_name")
+
+#: 選填標頭的辨識字。CSV 由 MES 匯出，有沒有標頭列不固定。
+_ID_ONLY_HEADERS = {"id", "tool", "tool_id", "equipment", "equipment_id", "eqp", "eqp_id", "chamber"}
+_CODE_HEADERS = {"defect code", "defect_code", "code"}
+
+_HAS_CJK = re.compile(rf"[{CJK}]")
+_HAS_LATIN = re.compile(r"[A-Za-z]")
+
+
+class EntitySourceError(ValueError):
+    """實體來源檔的格式錯誤。訊息必須帶檔名與列號——靜默略過畸形列會產出看似正常的錯字典。"""
+
+
+def _mixed_segments(name: str) -> list[str]:
+    """同時含中日韓與拉丁字元時，回傳各語言區塊；否則回傳空清單。
+
+    只在混合時才分段：純中文或純英文的別名分段後等於自己，多註冊沒有意義。
+    """
+    if not (_HAS_CJK.search(name) and _HAS_LATIN.search(name)):
+        return []
+    return [seg for seg in language_segments(name) if seg != name]
 
 
 @dataclass(frozen=True)
@@ -52,11 +88,28 @@ class EntityDictionary:
         self._max_literal_len = 0
 
     @classmethod
-    def load(cls, path: str | Path | None) -> EntityDictionary:
+    def load(
+        cls, path: str | Path | None, sources: list[dict[str, Any]] | None = None
+    ) -> EntityDictionary:
         d = cls()
-        if not path:
-            return d
-        p = Path(path)
+        if path:
+            d._load_yaml(Path(path))
+        for src in sources or []:
+            d._load_source(src)
+        return d
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> EntityDictionary:
+        """由設定載入 YAML 與所有 CSV 來源。生產路徑一律走這裡。
+
+        分成兩個入口的話，總有一條路徑會忘記載入 CSV，而症狀是「字典有些條目查不到」
+        ——那極難對應回成因。
+        """
+        return cls.load(getattr(cfg, "dictionary_path", None), getattr(cfg, "entity_sources", None))
+
+    # ---- 來源 ----
+
+    def _load_yaml(self, p: Path) -> None:
         if not p.exists():
             raise FileNotFoundError(f"entity dictionary not found: {p}")
         raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -68,8 +121,70 @@ class EntityDictionary:
                 if not canonical:
                     continue
                 names = [canonical, *(entry.get("aliases") or [])]
-                d.add(str(etype), canonical, [str(n) for n in names])
-        return d
+                self.add(str(etype), canonical, [str(n) for n in names])
+
+    def _load_source(self, src: dict[str, Any]) -> None:
+        schema = str(src.get("schema") or "")
+        etype = str(src.get("type") or "")
+        raw_path = src.get("path")
+        if schema not in CSV_SCHEMAS:
+            raise EntitySourceError(
+                f"未知的 entity source schema: {schema!r}；支援的有 {list(CSV_SCHEMAS)}"
+            )
+        if not etype:
+            raise EntitySourceError(f"entity source 缺少 type：{src!r}")
+        if not raw_path:
+            raise EntitySourceError(f"entity source 缺少 path：{src!r}")
+        p = Path(str(raw_path))
+        if not p.exists():
+            raise FileNotFoundError(f"entity source not found: {p}")
+        if schema == "id_only":
+            self._load_id_only(p, etype, str(src.get("child_type") or DEFAULT_CHILD_TYPE))
+        else:
+            self._load_module_code_name(p, etype)
+
+    def _load_id_only(self, p: Path, etype: str, child_type: str) -> None:
+        """單欄識別碼。含 `#` 者為子層實體（機台與腔體同表，以分隔符區分）。"""
+        for lineno, row in self._rows(p):
+            if len(row) != 1:
+                raise EntitySourceError(f"{p}:{lineno} id_only 須為單欄，實得 {len(row)} 欄")
+            value = row[0].strip()
+            if not value:
+                continue
+            if lineno == 1 and value.lower() in _ID_ONLY_HEADERS:
+                continue
+            this_type = child_type if HIERARCHY_SEP in value else etype
+            self.add(this_type, normalise_identifier(value), [value])
+
+    def _load_module_code_name(self, p: Path, etype: str) -> None:
+        """三欄 `Module, defect code, defect name`。
+
+        `Module` 是中繼資料：code 全域唯一，把 Module 併進識別會讓同一個缺陷分裂成多個實體。
+        `name` 是別名——「微粒」「刮傷」這類一般詞沒有結構可讓正則辨識，只有字典能對到 code。
+        """
+        for lineno, row in self._rows(p):
+            if len(row) != 3:
+                raise EntitySourceError(
+                    f"{p}:{lineno} module_code_name 須為三欄（Module, defect code, defect name），"
+                    f"實得 {len(row)} 欄"
+                )
+            _module, code, name = (c.strip() for c in row)
+            if not code:
+                continue
+            if lineno == 1 and code.lower() in _CODE_HEADERS:
+                continue
+            names = [code] + ([name] if name else [])
+            self.add(etype, code, names)
+
+    @staticmethod
+    def _rows(p: Path):
+        with p.open(encoding="utf-8-sig", newline="") as fh:
+            for lineno, row in enumerate(csv.reader(fh), start=1):
+                if not row or all(not c.strip() for c in row):
+                    continue
+                yield lineno, row
+
+    # ---- 註冊 ----
 
     def add(self, etype: str, canonical: str, names: list[str]) -> None:
         self.types.add(etype)
@@ -77,9 +192,16 @@ class EntityDictionary:
             name = name.strip()
             if not name:
                 continue
-            self._alias[normalise_identifier(name)] = (etype, canonical)
-            self._literal[name.lower()] = (etype, canonical)
-            self._max_literal_len = max(self._max_literal_len, len(name))
+            self._register(etype, canonical, name)
+            # 同格中英混合（`Particle 微粒`）時，使用者可能只打其中一種語言。
+            # 兩種都註冊就不必事先知道來源是哪種混合形式。
+            for seg in _mixed_segments(name):
+                self._register(etype, canonical, seg)
+
+    def _register(self, etype: str, canonical: str, name: str) -> None:
+        self._alias[normalise_identifier(name)] = (etype, canonical)
+        self._literal[name.lower()] = (etype, canonical)
+        self._max_literal_len = max(self._max_literal_len, len(name))
 
     def __len__(self) -> int:
         return len({v for v in self._alias.values()})

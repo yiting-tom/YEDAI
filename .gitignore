@@ -26,6 +26,10 @@ build/
 config.local.yaml
 dictionary.local.yaml
 
+# 實體來源 CSV。真實的機台／腔體／缺陷清單本身就是敏感資料——
+# 這個 repo 是公開的，所以這條是硬性條件，不是慣例。
+*.local.csv
+
 # OS
 .DS_Store
 

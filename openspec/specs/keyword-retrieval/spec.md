@@ -31,6 +31,8 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 系統 SHALL 提供可設定的識別碼正則樣式清單，將符合樣式的字串整段圈出並正規化（移除連字號、底線、空白並轉大寫）為單一詞元。正規化 MUST 使 `TEL-05`、`TEL05`、`tel 05`、`TEL_05` 對應至同一詞元，且與 `TEL-06` 對應至不同詞元。
 
+識別碼中的 `#` MUST 被保留為正規化後詞元的一部分，不得比照連字號移除——它標示父子層級的分界，移除後該分界無法可靠還原。
+
 #### Scenario: 識別碼變體正規化一致
 
 - **WHEN** 文本中出現 `TEL-05`、`TEL05`、`tel 05`
@@ -45,6 +47,16 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 設定檔提供自訂識別碼正則樣式清單
 - **THEN** 系統使用自訂清單取代預設清單
+
+#### Scenario: 含 `#` 的識別碼整段圈出
+
+- **WHEN** 文本含 `aepol1#pm1`
+- **THEN** 該字串被視為單一識別碼，不被 `#` 切成兩段
+
+#### Scenario: `#` 在正規化後保留
+
+- **WHEN** 對 `aepol1#pm1` 正規化
+- **THEN** 結果為 `AEPOL1#PM1`，`#` 未被移除
 
 ### Requirement: 中英混合斷詞
 
@@ -161,4 +173,40 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 兩個模式的 top-10 沒有任何共同 concept
 - **THEN** Jaccard 為 0.0
+
+### Requirement: 父子層級識別碼展開
+
+含層級分隔符 `#` 的識別碼 SHALL 同時產生子層詞元與父層詞元，使針對父層的查詢能命中僅提及子層的文件。展開 MUST 同時作用於詞彙腿的斷詞輸出與實體抽取的識別碼列舉，兩者不得分歧。
+
+展開 MUST 僅依字串結構進行，不得依賴實體字典——字典覆蓋率是本實驗的待測變數，不可作為其他機制的前提。
+
+#### Scenario: 腔體識別碼產生父層詞元
+
+- **WHEN** 文本含 `aepol1#pm1`
+- **THEN** 產生 `ID:AEPOL1#PM1` 與 `ID:AEPOL1` 兩個詞元
+
+#### Scenario: 查父層命中子層文件
+
+- **WHEN** 查詢 `aepol1`，而某文件僅提及 `aepol1#pm1`
+- **THEN** 該文件被檢索到
+
+#### Scenario: 不同機台的同名腔體不混淆
+
+- **WHEN** 語料中同時存在 `aepol1#pm1` 與 `aepol6#pm1`
+- **THEN** 兩者的子層詞元不同；查詢 `aepol1#pm1` 不命中僅含 `aepol6#pm1` 的文件
+
+#### Scenario: 實體抽取同步展開
+
+- **WHEN** 對含 `aepol1#pm1` 的文本抽取實體
+- **THEN** 抽取結果同時含子層與父層兩個識別碼
+
+#### Scenario: 字典為空時展開仍成立
+
+- **WHEN** 未提供任何實體字典，文本含 `aepol1#pm1`
+- **THEN** 父層詞元仍被產生
+
+#### Scenario: 無層級分隔符者不受影響
+
+- **WHEN** 文本含 `aepol1`
+- **THEN** 僅產生單一詞元，不產生額外的展開詞元
 
