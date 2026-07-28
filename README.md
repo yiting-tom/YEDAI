@@ -27,6 +27,7 @@
 
 | | |
 |---|---|
+| [docs/api.md](docs/api.md) | API 參考：逐端點的參數、運作步驟、回應結構與錯誤碼 |
 | [docs/data-flow.md](docs/data-flow.md) | 資料流圖（DFD）+ 計分公式 + 資料存放位置 |
 | [docs/indexing.md](docs/indexing.md) | 如何建立索引、統計數字怎麼看、何時必須重建 |
 | [docs/agent-tools.md](docs/agent-tools.md) | 六個 agent 工具、建議流程、MCP 接法、常見誤用 |
@@ -76,10 +77,10 @@ uv run yedai serve -c config.local.yaml
 |---|---|---|
 | **retrieval**<br>找到 concept | `GET /v1/search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`。**只回菜單，不回內容** |
 | | `GET /v1/grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
-| **content**<br>取得內容 | `GET /v1/concept/{id}` | 單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
+| **content**<br>取得內容 | `GET /v1/concept/{concept_id}` | 單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
 | | `POST /v1/concepts` | 批次取全文（最多 50 筆，部分成功語意） |
-| | `GET /v1/concept/{id}/asset?path=` | 下載該 concept 引用的資產，預設 inline |
-| **graph**<br>沿關聯導航 | `GET /v1/concept/{id}/neighbors` | 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
+| | `GET /v1/concept/{concept_id}/asset?path=` | 下載該 concept 引用的資產，預設 inline |
+| **graph**<br>沿關聯導航 | `GET /v1/concept/{concept_id}/neighbors` | 展開 1~2 跳；`direction=in` 回傳「誰指向我」 |
 | **telemetry**<br>量測與回饋 | `POST /v1/feedback` | 記錄點選；`query_id` 來自 `/v1/search` 回應 |
 | | `GET /v1/report` | 去識別化統計報告 |
 | **ops**<br>服務與語料狀態 | `GET /v1/stats` | 語料統計與索引狀態 |
@@ -88,6 +89,8 @@ uv run yedai serve -c config.local.yaml
 
 前三類正好對應建議流程（search → get → neighbors），所以分組本身就是流程說明。
 `telemetry` 刻意獨立——那兩個端點服務的是 A/B/C 消融實驗，不是日常檢索，agent 不需要呼叫。
+
+**逐端點的參數、運作步驟、回應結構與錯誤碼見 [docs/api.md](docs/api.md)。**
 
 `GET /version` 會同時回報「本程式支援的索引格式」與「目前載入索引的格式」，
 兩者無對應關係；「支援 v3、載入的是 v2」正是最需要一眼看出的除錯情境。

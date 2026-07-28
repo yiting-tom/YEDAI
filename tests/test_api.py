@@ -1,39 +1,6 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
-import yaml
-from fastapi.testclient import TestClient
-
-from yedai import api
-from yedai.entities import EntityDictionary
-from yedai.index import build_index
-
-
-@pytest.fixture
-def client(corpus: Path, config, dictionary_path: Path, tmp_path: Path, monkeypatch):
-    dictionary = EntityDictionary.load(config.dictionary_path)
-    build_index(corpus, config, dictionary).save(config.index_path)
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        yaml.safe_dump(
-            {
-                "dictionary_path": str(dictionary_path),
-                "index_path": str(config.index_path),
-                "log_dir": str(config.log_dir),
-                "seed": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("YEDAI_CONFIG", str(cfg_path))
-    monkeypatch.delenv("YEDAI_INDEX", raising=False)
-
-    with TestClient(api.app) as c:
-        yield c
 
 
 def test_healthz(client) -> None:

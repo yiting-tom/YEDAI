@@ -141,6 +141,23 @@ app = FastAPI(
 #: 功能端點統一掛前綴——不逐一改寫十個裝飾器；日後開 /v2 只是再掛一個 router。
 router = APIRouter(prefix=f"/{API_VERSION}")
 
+_ERROR_DESCRIPTIONS = {
+    403: "路徑違反約束（逸出 bundle，或不在允許的資產目錄之下）",
+    404: "查無此資源",
+    410: "資源曾經存在但語料已變動——需重建索引",
+    500: "索引中的路徑異常",
+    503: "索引未載入",
+}
+
+
+def _errs(*codes: int) -> dict[int, dict[str, str]]:
+    """把實際會回傳的錯誤碼宣告進 OpenAPI。
+
+    不宣告的話文件頁只會顯示 200/422，與實際行為不符——而這份 schema
+    正是 agent 與呼叫端唯一的契約來源。
+    """
+    return {c: {"description": _ERROR_DESCRIPTIONS[c]} for c in codes}
+
 
 def _require_index() -> None:
     if not state.loaded:
@@ -194,7 +211,7 @@ def version() -> dict[str, Any]:
     }
 
 
-@router.get("/stats", summary="語料統計與索引狀態", tags=["ops"])
+@router.get("/stats", summary="語料統計與索引狀態", tags=["ops"], responses=_errs(503))
 def stats() -> dict[str, Any]:
     _require_index()
     s = state.index.stats
@@ -216,7 +233,7 @@ def stats() -> dict[str, Any]:
     }
 
 
-@router.get("/search", summary="查詢（單模式或三模式並排）", tags=["retrieval"])
+@router.get("/search", summary="查詢（單模式或三模式並排）", tags=["retrieval"], responses=_errs(503))
 def search(
     q: str = Query(..., min_length=1, description="查詢字串"),
     mode: ModeParam = Query("compare", description="A / B / C，或 compare 三模式並排"),
@@ -250,6 +267,7 @@ def search(
         "`include_raw=false` 時只回結構化欄位，省去原始全文的體積。"
     ),
     tags=["content"],
+    responses=_errs(503),
 )
 def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
     _require_index()
@@ -279,6 +297,7 @@ def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
     ),
     response_class=FileResponse,
     tags=["content"],
+    responses=_errs(403, 404, 503),
 )
 def asset(
     concept_id: str,
@@ -315,6 +334,7 @@ def asset(
         f"`depth` 上限 {MAX_DEPTH}。指向語料中不存在 id 的懸空引用列於 `dangling`。"
     ),
     tags=["graph"],
+    responses=_errs(404, 503),
 )
 def neighbors(
     concept_id: str,
@@ -340,6 +360,7 @@ def neighbors(
         "預設字面比對；`regex=true` 才啟用正則（使用者正則可能觸發災難性回溯）。"
     ),
     tags=["retrieval"],
+    responses=_errs(404, 503),
 )
 def grep(
     pattern: str = Query(..., min_length=1, description="搜尋樣式"),
@@ -376,6 +397,7 @@ def grep(
         "全文於請求時從磁碟讀取，因此檔案變更會立即反映，無須重建索引。"
     ),
     tags=["content"],
+    responses=_errs(404, 410, 500, 503),
 )
 def concept(concept_id: str) -> dict[str, Any]:
     _require_index()
@@ -390,7 +412,7 @@ def concept(concept_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=410, detail=str(exc)) from None
 
 
-@router.post("/feedback", summary="記錄點選回饋", tags=["telemetry"])
+@router.post("/feedback", summary="記錄點選回饋", tags=["telemetry"], responses=_errs(404, 503))
 def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     _require_index()
     try:
@@ -406,7 +428,7 @@ def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     return {"status": "recorded", "query_id": payload.query_id}
 
 
-@router.get("/report", summary="去識別化統計報告（可安全分享）", tags=["telemetry"])
+@router.get("/report", summary="去識別化統計報告（可安全分享）", tags=["telemetry"], responses=_errs(503))
 def report() -> dict[str, Any]:
     _require_index()
     return build_report(state.index, state.store, state.config)

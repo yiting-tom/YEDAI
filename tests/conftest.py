@@ -165,3 +165,32 @@ def searcher(corpus: Path, config: Config) -> Searcher:
     dictionary = EntityDictionary.load(config.dictionary_path)
     index = build_index(corpus, config, dictionary)
     return Searcher(index, config, dictionary)
+
+
+@pytest.fixture
+def client(corpus: Path, config, dictionary_path: Path, tmp_path: Path, monkeypatch):
+    """TestClient，索引已建好並透過環境變數指向它。HTTP 相關測試共用。"""
+    from fastapi.testclient import TestClient
+
+    from yedai import api
+
+    dictionary = EntityDictionary.load(config.dictionary_path)
+    build_index(corpus, config, dictionary).save(config.index_path)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "dictionary_path": str(dictionary_path),
+                "index_path": str(config.index_path),
+                "log_dir": str(config.log_dir),
+                "seed": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("YEDAI_CONFIG", str(cfg_path))
+    monkeypatch.delenv("YEDAI_INDEX", raising=False)
+
+    with TestClient(api.app) as c:
+        yield c

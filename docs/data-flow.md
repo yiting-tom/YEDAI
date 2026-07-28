@@ -1,6 +1,7 @@
 # Data Flow
 
 資料從 OKF bundle 進入系統，到查詢結果與全文回到呼叫端的完整路徑。
+單一端點的參數與回應結構見 [api.md](./api.md)——這份談的是資料如何流動。
 
 系統有**兩個時間上分離的階段**：離線建索引（`yedai index`）與線上查詢（HTTP / CLI）。
 兩者唯一的介面是磁碟上的索引檔與原始 OKF 檔案。
@@ -213,7 +214,7 @@ flowchart TB
 
 | | 是否立即反映 |
 |---|---|
-| `/v1/concept/{id}` 的內容 | ✅ 立即 |
+| `/v1/concept/{concept_id}` 的內容 | ✅ 立即 |
 | `/v1/search` 的排名 | ❌ 要重建索引 |
 
 詳見 [indexing.md](./indexing.md#4-何時必須重建索引)。
@@ -254,7 +255,7 @@ grep 等於留一條繞過檢索層的退路，那會讓整套系統回到原點
 
 ## Level 1 — 階段五：取回資產
 
-`GET /v1/concept/{id}/asset?path=`（`api.py` → `assets.resolve_asset`）
+`GET /v1/concept/{concept_id}/asset?path=`（`api.py` → `assets.resolve_asset`）
 
 ```mermaid
 flowchart TB

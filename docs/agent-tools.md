@@ -172,6 +172,8 @@ uv run yedai serve -c config.local.yaml     # http://127.0.0.1:8000/docs
 HTTP 額外有 `POST /v1/feedback`（點選回饋）與 `GET /v1/report`（去識別化統計報告），
 那兩個屬 `telemetry` 分類，服務的是 A/B/C 消融實驗，不在 agent 工具集裡。
 
+每個端點的完整參數、運作步驟與錯誤碼見 [api.md](./api.md)。
+
 `GET /healthz` 與 `GET /version` 不帶版本前綴。
 
 ---
