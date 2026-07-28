@@ -157,8 +157,6 @@ claude-agent-sdk / Claude Code 的 MCP 設定：
 uv run yedai serve -c config.local.yaml     # http://127.0.0.1:8000/docs
 ```
 
-| 工具 | HTTP |
-|---|---|
 | MCP 工具 | HTTP | 分類 |
 |---|---|---|
 | `search` | `GET /v1/search?q=&mode=&k=` | retrieval |
