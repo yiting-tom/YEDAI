@@ -22,7 +22,8 @@ from .tokenizer import Tokenizer
 # v2：新增 by_id 與 bundle_roots，使 concept 全文可於請求時從磁碟定位
 # v3：新增 related_out / related_in / dangling，使 agent 能沿 related 展開
 #: 4：識別碼支援 `#` 與父子層級展開，詞彙空間因此與 v3 不相容。
-INDEX_FORMAT_VERSION = 4
+#: 5：新增 op no / lot / wafer / tech 樣式，且 `#` 的父層允許含 `-`（`XTR-05#PM1`）。
+INDEX_FORMAT_VERSION = 5
 N_FIELDS = len(FIELDS)
 
 

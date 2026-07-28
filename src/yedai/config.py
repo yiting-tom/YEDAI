@@ -30,6 +30,10 @@ def _default_entity_weights() -> dict[str, float]:
 class Config:
     # --- 斷詞 ---
     identifier_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_IDENTIFIER_PATTERNS))
+    #: 識別碼格式樣本檔。用 `yedai check-formats` 驗證上面那份樣式涵蓋得了真實形狀。
+    #: 樣本是真實識別碼，屬敏感資料——請指向 `*-samples.local.yaml`（已被 gitignore）。
+    #: 不設也能跑，但那等於沒有任何機制能發現「樣式對不上真實語料」。
+    identifier_samples_path: str | None = None
 
     # --- BM25F ---
     k1: float = 1.2

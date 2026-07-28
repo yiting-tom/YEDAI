@@ -24,7 +24,17 @@ DEFAULT_IDENTIFIER_PATTERNS: list[str] = [
     # `#pm1` 被丟到一般斷詞，層級關係就此消失。
     # 誤圈面：`page.html#section` 這類片段也會中。與其他樣式一樣偏 recall，
     # 誤圈量會出現在報告的 regex fallback 統計裡。
-    r"[A-Za-z0-9]{2,12}#[A-Za-z0-9]{1,10}",
+    # 父層允許含 `-` `_`：`XTR-05#PM1` 這種寫法若不放進來，會先被較短的樣式
+    # 咬掉 `XTR-05`，剩下的 `#PM1` 變成獨立的 `ID:PM1`——跨機台共用，正是要修的那個病。
+    r"[A-Za-z0-9][A-Za-z0-9_-]{1,14}#[A-Za-z0-9][A-Za-z0-9_-]{0,11}",
+    # 批號／晶圓號：`xxxxxx.NN`。小數點後兩碼是片號，是 lot 的子層。
+    # 小數點前 6 碼為跑完整 flow 的量產批、超過 6 碼為 control wafer——
+    # 這裡不區分兩者（那是語義不是斷詞），但**必須**兩者都圈得到：
+    # 舊樣式只抓得到 6 碼那種，剛好在語義分界線上表現不一致。
+    r"[A-Za-z0-9]{6,}\.\d{2}\b",
+    # 作業序號：`0000.000` / `000.000`。純數字，小數點後三碼——
+    # 位數與批號不同，這是兩者唯一可靠的區分點。
+    r"\d{3,4}\.\d{3}\b",
     r"cpt_[0-9A-Za-z]+",
     r"[A-Za-z]{1,2}\d{1,2}[-_][A-Za-z]{2,12}",        # M1-etch, W2_poly
     r"[A-Za-z]{2,6}[-_ ]?\d{1,5}(?:[-_][A-Za-z0-9]{1,8})+",  # FL-A100-02
@@ -35,7 +45,14 @@ DEFAULT_IDENTIFIER_PATTERNS: list[str] = [
     r"[A-Za-z]{2,6} \d{1,5}\b",
     r"[A-Za-z]{2,5}\d{1,4}\b",                         # PM3, TEL05
     r"\d{1,2}[A-Za-z]{1,3}\d{2,4}",                    # 3M12 之類料號樣式
+    # 製程世代：`N` 起始的三碼。單獨一個字母開頭，其他樣式都要求兩個以上，
+    # 所以不加這條的話 `N16` 只會變成一般詞元，進不了實體空間。
+    r"\b[Nn]\d{2}\b",
 ]
+
+#: 小數點後綴的層級分隔。與 `#` 分開處理：`.` 也出現在作業序號裡，
+#: 而作業序號的小數點分隔的是序號本身的組成，不是父子關係。
+SUFFIX_SEP = "."
 
 
 def normalise_identifier(s: str) -> str:
@@ -62,12 +79,18 @@ def expand_hierarchy(normalised: str) -> list[str]:
     只依字串結構，**不查字典**：字典覆蓋率正是本實驗要量測的未知數，
     拿它當另一個機制的前提會讓兩者的效果無法區分。
     """
-    if HIERARCHY_SEP not in normalised:
-        return [normalised]
-    parent = normalised.split(HIERARCHY_SEP, 1)[0]
-    if not parent:
-        return [normalised]
-    return [normalised, parent]
+    if HIERARCHY_SEP in normalised:
+        parent = normalised.split(HIERARCHY_SEP, 1)[0]
+        return [normalised, parent] if parent else [normalised]
+
+    if SUFFIX_SEP in normalised:
+        parent = normalised.split(SUFFIX_SEP, 1)[0]
+        # 純數字者是作業序號（`1234.000`），小數點分隔的是序號本身的組成。
+        # 展開它會產生 `1234` 這個與滿地無關數字碰撞的詞元，是淨損失。
+        if parent and not parent.isdigit():
+            return [normalised, parent]
+
+    return [normalised]
 
 
 _LANG_RUN = re.compile(rf"[{CJK}]+|[^{CJK}]+")
@@ -125,6 +148,14 @@ class Tokenizer:
             cursor = m.end()
         out.extend(self._plain(text[cursor:]))
         return out
+
+    def find_identifier_spans(self, text: str) -> list[tuple[int, int]]:
+        """原始比對命中的位置區間，不含層級展開。
+
+        給格式檢查用：判斷一個樣本是否被**整段**圈出，需要的是實際比對到幾段、
+        蓋住哪些位置，而不是展開後有幾個詞元。
+        """
+        return [(m.start(), m.end()) for m in self._ident_re.finditer(text or "")]
 
     def find_identifiers(self, text: str) -> list[tuple[str, str, int, int]]:
         """回傳 (raw, normalised, start, end)，給實體抽取的 regex fallback 用。

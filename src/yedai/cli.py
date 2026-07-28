@@ -13,6 +13,7 @@ from rich.table import Table
 
 from .config import Config
 from .entities import EntityDictionary, EntitySourceError
+from .formats import FULL, NONE, PARTIAL, check_coverage, load_samples
 from .index import Index, build_index
 from .search import MODES, ModeResult, Searcher
 from .telemetry import TelemetryStore, build_report
@@ -300,6 +301,67 @@ def serve(
         os.environ["YEDAI_CONFIG"] = str(config)
     console.print(f"互動式 API 文件： [green]http://{host}:{port}/docs[/green]")
     uvicorn.run("yedai.api:app", host=host, port=port, log_level="info")
+
+
+@app.command("check-formats")
+def check_formats(config: Optional[Path] = ConfigOpt) -> None:
+    """驗證識別碼樣式涵蓋得了真實形狀。
+
+    樣本檔留在本機（真實識別碼屬敏感資料），只有涵蓋與否會被拿來把關。
+    存在未涵蓋或部分涵蓋的樣本時以非零狀態碼結束，可直接接進 CI。
+    """
+    from .tokenizer import Tokenizer
+
+    cfg = _config(config)
+    try:
+        samples = load_samples(cfg.identifier_samples_path)
+    except (FileNotFoundError, ValueError) as exc:
+        err.print(f"[red]樣本檔錯誤：[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    if not samples:
+        err.print(
+            "[yellow]未設定 identifier_samples_path。[/yellow]\n"
+            "沒有樣本就沒有任何機制能發現「樣式對不上真實語料」——"
+            "而那正是模式 B/C 失效時最難察覺的形式。\n"
+            "參考 identifier-samples.example.yaml 建立一份本機樣本檔。"
+        )
+        raise typer.Exit(2)
+
+    report = check_coverage(Tokenizer(cfg.identifier_patterns), samples)
+
+    table = Table(title="識別碼格式涵蓋率")
+    table.add_column("類型")
+    table.add_column("樣本")
+    table.add_column("判定")
+    table.add_column("實際詞元")
+    styles = {FULL: "green", PARTIAL: "yellow", NONE: "red"}
+    labels = {FULL: "完整", PARTIAL: "部分", NONE: "未涵蓋"}
+    for etype, results in report.by_type().items():
+        for r in results:
+            table.add_row(
+                etype,
+                r.sample,
+                f"[{styles[r.verdict]}]{labels[r.verdict]}[/{styles[r.verdict]}]",
+                "" if r.ok else " ".join(r.tokens),
+            )
+    console.print(table)
+
+    if report.types_without_samples:
+        console.print(
+            f"\n[yellow]無樣本的類型：[/yellow] {', '.join(report.types_without_samples)}\n"
+            "這不是通過——是我們不知道這些類型的樣式有沒有效。"
+        )
+
+    if not report.ok:
+        err.print(
+            f"\n[red]{len(report.failures)} 個樣本未被完整圈出。[/red]\n"
+            "被切成兩段的識別碼會失去鑑別力，讓模式 B 被低估——"
+            "而低估的方向剛好會導出「識別碼保護沒有用」這個相反的結論。"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"\n[green]{len(report.results)} 個樣本全部被完整圈出。[/green]")
 
 
 if __name__ == "__main__":

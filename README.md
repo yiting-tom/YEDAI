@@ -56,16 +56,20 @@ cp dictionary.example.yaml dictionary.local.yaml   # 填入你的機台/製程/�
 #    索引格式版本變更時舊快取會被拒絕載入並提示重建，直接重跑這行即可
 uv run yedai index /path/to/your/bundles -c config.local.yaml
 
-# 3. 查詢
+# 3. 驗證識別碼樣式涵蓋得了你的真實形狀（先做這步，否則後面的數字不能當真）
+cp identifier-samples.example.yaml identifier-samples.local.yaml   # 填入真實形狀
+uv run yedai check-formats -c config.local.yaml
+
+# 4. 查詢
 uv run yedai search "XTR-05 的 particle 問題" -c config.local.yaml -m C
 
-# 4. 三模式並排 + 重疊度
+# 5. 三模式並排 + 重疊度
 uv run yedai compare "XTR-05 的 particle 問題" -c config.local.yaml
 
-# 5. 批次跑一整份查詢清單
+# 6. 批次跑一整份查詢清單
 uv run yedai compare -f queries.txt -c config.local.yaml
 
-# 6. 產出可分享的去識別化報告
+# 7. 產出可分享的去識別化報告
 uv run yedai report -o report.json -c config.local.yaml
 ```
 
@@ -222,6 +226,9 @@ curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
 - **識別碼正則過寬**：預設樣式包含空白分隔形式（`TEL 05`），會誤圈 `slide 005`、`page 12`
   這類詞組。漏抓比誤抓危險（會讓模式 B/C 被低估、導出錯誤結論），所以預設偏向recall。
   誤圈量會顯示在報告的 `from_regex_fallback`，整份清單可用 `identifier_patterns` 覆寫。
+- **樣式是否涵蓋你的真實形狀，必須自己驗**。`uv run yedai check-formats` 會拿你本機的
+  樣本檔逐條檢查。**沒跑過這個之前，模式 B/C 的數字不能當真**——樣式對不上真實形狀時
+  不會報錯，只會安靜地讓模式 B 被低估。作法見 [docs/indexing.md](docs/indexing.md)。
 - **父子層級展開有代價**：`aepol1#pm1` 會同時產生腔體層與機台層詞元，讓「查機台」
   命中只寫到腔體的文件。代價是機台層詞元變高頻、鑑別力下降——這部分由 BM25 的 idf
   自動吸收，不需調參，但若日後發現機台層查詢過於發散，這裡是第一個該看的地方。

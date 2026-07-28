@@ -61,6 +61,16 @@ fusion_entity: 0.6
 #   - 'cpt_[0-9A-Za-z]+'
 #   - '[A-Za-z]{2,6}[-_]\d{1,5}'
 
+# 格式樣本檔。`yedai check-formats` 會逐條檢查每個樣本是否被**整段**圈成
+# 單一識別碼——被切成兩段的識別碼會失去鑑別力，讓模式 B 被低估。
+#
+# ⚠️ 樣本就是真實識別碼，屬敏感資料。請指向 *-samples.local.yaml（已被 gitignore）。
+#    下面這個 example 檔是編造值，只用來驗證機制本身。
+#
+# 不設也能跑，但那等於沒有任何機制能發現「樣式對不上真實語料」——
+# 而那正是這個實驗最容易靜默失效的地方。
+identifier_samples_path: identifier-samples.example.yaml
+
 # --- 資產 ---
 # 允許透過 /concept/{id}/asset 讀取的目錄名稱。這是安全白名單：
 # 只有位於這些名稱的目錄之下的檔案才取得到，其餘一律 403。

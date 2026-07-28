@@ -30,6 +30,9 @@ dictionary.local.yaml
 # 這個 repo 是公開的，所以這條是硬性條件，不是慣例。
 *.local.csv
 
+# 識別碼格式樣本。樣本就是真實識別碼，同上。
+*-samples.local.yaml
+
 # OS
 .DS_Store
 
