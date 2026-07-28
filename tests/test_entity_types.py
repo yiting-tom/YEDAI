@@ -102,6 +102,86 @@ def test_user_added_pattern_does_not_void_the_others() -> None:
     assert specs[-1] == IdentifierPattern(r"ZZ\d{4}")  # 自訂的沒有宣告 → unknown
 
 
+# --- 設定自行宣告類型（敏感的組成規則得以住在本機設定）---
+
+
+#: 一條**編造**的樣式，形狀模仿「單寫與帶子層必須一致」的那類識別碼。
+FAKE_TOOL = r"\b[wxyz][a-z](?:aa|bb)[mn][1-9a-z]\b"
+
+
+def test_config_can_declare_a_type_for_a_custom_pattern() -> None:
+    """敏感的組成規則不該進公開 repo，但寫進本機設定後仍必須帶得動類型宣告——
+    否則使用者得在「斷詞正確」與「統計正確」之間二選一。"""
+    cfg = Config(
+        identifier_patterns=[
+            {"pattern": FAKE_TOOL, "type": "widget_id", "shape_complete": True},
+            *DEFAULT_IDENTIFIER_PATTERNS,
+        ]
+    )
+    tok = Tokenizer(cfg.identifier_specs())
+    ex = EntityExtractor(EntityDictionary.load(None), tok)
+    assert {h.canonical: h.type for h in ex.extract("機台 wxaam5 異常")} == {"WXAAM5": "widget_id"}
+    assert "widget_id" in tok.shape_complete_types
+
+
+def test_declared_parent_type_is_used_in_expansion() -> None:
+    cfg = Config(
+        identifier_patterns=[
+            {"pattern": r"\bQQ\d#\d\b", "type": "widget_part", "parent_type": "widget_id"},
+            *DEFAULT_IDENTIFIER_PATTERNS,
+        ]
+    )
+    ex = EntityExtractor(EntityDictionary.load(None), Tokenizer(cfg.identifier_specs()))
+    assert {h.canonical: h.type for h in ex.extract("QQ1#2")} == {
+        "QQ1#2": "widget_part",
+        "QQ1": "widget_id",
+    }
+
+
+def test_letter_suffix_gap_is_closable_from_local_config() -> None:
+    """這是本次的動機：形狀末位允許字母時，單寫與帶子層的行為必須一致。
+
+    未宣告樣式時 `wxaama` 不是識別碼，但 `wxaama#1` 是——同一個實體因為寫法不同
+    而時而進、時而不進實體空間，那種不一致不會報錯，只會讓模式 B/C 悄悄失效。
+    """
+    plain = Tokenizer()
+    assert not plain.find_identifier_spans("wxaama")
+    assert plain.find_identifier_spans("wxaama#1")  # 不一致
+
+    cfg = Config(identifier_patterns=[{"pattern": FAKE_TOOL, "type": "widget_id"}, *DEFAULT_IDENTIFIER_PATTERNS])
+    fixed = Tokenizer(cfg.identifier_specs())
+    assert fixed.find_identifier_spans("wxaama")
+    assert fixed.protected("wxaama") == ["ID:WXAAMA"]
+
+
+def test_shape_complete_without_a_type_is_a_config_error() -> None:
+    """沒有類型的完整性宣稱對不到任何分母——它會被靜默忽略，
+    而使用者會以為自己開了一個其實沒開的東西。"""
+    with pytest.raises(ValueError, match="shape_complete"):
+        Config().merged({"identifier_patterns": [{"pattern": r"x\d", "shape_complete": True}]})
+
+
+def test_mapping_without_pattern_is_rejected() -> None:
+    with pytest.raises(ValueError, match="pattern"):
+        Config().merged({"identifier_patterns": [{"type": "widget_id"}]})
+
+
+def test_unknown_key_in_mapping_is_rejected() -> None:
+    """打錯欄位名不該被靜默忽略——那會讓宣告看起來生效了但其實沒有。"""
+    with pytest.raises(ValueError, match="不認得"):
+        Config().merged({"identifier_patterns": [{"pattern": r"x\d", "typo": "widget_id"}]})
+
+
+def test_invalid_regex_fails_at_config_time() -> None:
+    """等到建索引才炸，錯誤會出現在離設定很遠的地方。"""
+    with pytest.raises(ValueError, match="正則"):
+        Config().merged({"identifier_patterns": ["[unclosed"]})
+
+
+def test_string_form_still_behaves_the_same() -> None:
+    assert Config().identifier_specs() == list(resolve_specs(DEFAULT_IDENTIFIER_PATTERNS))
+
+
 def test_measurable_types_follow_the_patterns_actually_used() -> None:
     """換掉樣式清單時，能不能算比例也要跟著變——寫死會讓宣稱在改過的樣式上繼續成立。"""
     only_op_no = Tokenizer([r"\b\d{3,6}\.\d{3}\b"])

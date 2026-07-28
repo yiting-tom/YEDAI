@@ -181,7 +181,9 @@ def language_segments(s: str) -> list[str]:
 _BUILTIN_BY_PATTERN = {spec.pattern: spec for spec in DEFAULT_IDENTIFIER_SPECS}
 
 
-def resolve_specs(patterns: list[str] | list[IdentifierPattern]) -> list[IdentifierPattern]:
+def resolve_specs(
+    patterns: "list[str] | list[IdentifierPattern] | list[dict]",
+) -> list[IdentifierPattern]:
     """把樣式字串還原成 spec。字串與內建樣式**逐條比對**，相同者沿用其類型宣告。
 
     設定檔只能給字串，所以這一步不做的話，類型宣告會在「設定 → Tokenizer」之間
@@ -190,14 +192,28 @@ def resolve_specs(patterns: list[str] | list[IdentifierPattern]) -> list[Identif
 
     逐條而非整份比對：使用者加一條自訂樣式，不該讓其他樣式的宣告一起失效。
     相同的樣式字串就是相同的形狀，沿用它的判斷是安全的。
-    使用者自訂的樣式沒有宣告，其命中歸入 `unknown`——我們確實不知道那些是什麼類型。
+    使用者自訂的字串樣式沒有宣告，其命中歸入 `unknown`——我們確實不知道那些是什麼類型。
+
+    設定也可以改給 mapping：`{pattern, type, parent_type, shape_complete}`，自行宣告。
+    這條路存在的理由是保密邊界——敏感的識別碼組成規則必須能住在未進版控的本機設定，
+    而只收字串會迫使使用者在「斷詞正確」與「統計正確」之間二選一。
     """
-    return [
-        p
-        if isinstance(p, IdentifierPattern)
-        else _BUILTIN_BY_PATTERN.get(p, IdentifierPattern(p))
-        for p in patterns
-    ]
+    out: list[IdentifierPattern] = []
+    for p in patterns:
+        if isinstance(p, IdentifierPattern):
+            out.append(p)
+        elif isinstance(p, dict):
+            out.append(
+                IdentifierPattern(
+                    pattern=p["pattern"],
+                    type=p.get("type"),
+                    parent_type=p.get("parent_type"),
+                    shape_complete=bool(p.get("shape_complete", False)),
+                )
+            )
+        else:
+            out.append(_BUILTIN_BY_PATTERN.get(p, IdentifierPattern(p)))
+    return out
 
 
 class Tokenizer:

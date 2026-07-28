@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,10 +30,15 @@ def _default_entity_weights() -> dict[str, float]:
 @dataclass
 class Config:
     # --- 斷詞 ---
-    #: 設定檔只能給字串。類型宣告（哪些形狀唯一決定了哪個實體類型）由
-    #: `identifier_specs()` 逐條對回內建樣式取得——直接把字串丟給 Tokenizer
-    #: 會讓宣告在這裡靜靜消失，覆蓋率統計退回恆為 1.0 且不會報錯。
-    identifier_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_IDENTIFIER_PATTERNS))
+    #: 每一項可以是樣式字串，或 `{pattern, type, parent_type, shape_complete}`。
+    #: 字串會逐條對回內建樣式取得類型宣告——直接把字串丟給 Tokenizer 會讓宣告
+    #: 在這裡靜靜消失，覆蓋率統計退回恆為 1.0 且不會報錯。
+    #:
+    #: mapping 形式的用途是**保密邊界**：敏感的識別碼組成規則（例如機台編碼的
+    #: 完整字元集）不該進公開 repo，但寫進本機設定後仍必須帶得動類型宣告，
+    #: 否則使用者得在「斷詞正確」與「統計正確」之間二選一。
+    #: 請放進 `config.local.yaml`（已 gitignore）。
+    identifier_patterns: list[Any] = field(default_factory=lambda: list(DEFAULT_IDENTIFIER_PATTERNS))
     #: 識別碼格式樣本檔。用 `yedai check-formats` 驗證上面那份樣式涵蓋得了真實形狀。
     #: 樣本是真實識別碼，屬敏感資料——請指向 `*-samples.local.yaml`（已被 gitignore）。
     #: 不設也能跑，但那等於沒有任何機制能發現「樣式對不上真實語料」。
@@ -161,6 +167,31 @@ class Config:
                     f"可用的有 {list(CSV_SCHEMAS)}"
                 )
 
+        for i, pat in enumerate(self.identifier_patterns):
+            if isinstance(pat, dict):
+                if not pat.get("pattern"):
+                    raise ValueError(f"identifier_patterns[{i}] 的 mapping 缺少 pattern")
+                unknown = set(pat) - {"pattern", "type", "parent_type", "shape_complete"}
+                if unknown:
+                    raise ValueError(f"identifier_patterns[{i}] 有不認得的鍵：{sorted(unknown)}")
+                # 沒有類型的完整性宣稱對不到任何分母——它會被靜默忽略，
+                # 而使用者會以為自己開了一個其實沒開的東西。
+                if pat.get("shape_complete") and not pat.get("type"):
+                    raise ValueError(
+                        f"identifier_patterns[{i}] 宣告了 shape_complete 卻沒有 type。"
+                        f"沒有類型的完整性宣稱對應不到任何覆蓋率分母。"
+                    )
+                source = pat["pattern"]
+            elif isinstance(pat, str):
+                source = pat
+            else:
+                raise ValueError(f"identifier_patterns[{i}] 必須是字串或 mapping")
+            # 當場編譯。等到建索引才炸，錯誤會出現在離設定很遠的地方。
+            try:
+                re.compile(source)
+            except re.error as exc:
+                raise ValueError(f"identifier_patterns[{i}] 不是合法的正則：{exc}") from exc
+
         if int(self.embedding.get("dim", 0)) <= 0:
             raise ValueError("embedding.dim must be > 0")
         if not str(self.embedding.get("base_url", "")).strip():
@@ -203,7 +234,7 @@ class Config:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
     def identifier_specs(self) -> list[IdentifierPattern]:
-        """樣式字串 + 內建的類型宣告。建 `Tokenizer` 一律走這裡，不要直接給字串。"""
+        """樣式 + 類型宣告（內建的或設定自行宣告的）。建 `Tokenizer` 一律走這裡。"""
         return resolve_specs(self.identifier_patterns)
 
     def experiment_params(self) -> dict[str, Any]:
