@@ -73,8 +73,12 @@ uv run yedai report -o report.json -c config.local.yaml
 
 ```bash
 uv run yedai serve -c config.local.yaml
-# 互動式文件： http://127.0.0.1:8000/docs
+# Swagger： http://127.0.0.1:8000/docs
+# ReDoc：   http://127.0.0.1:8000/redoc
 ```
+
+每個端點的**參數、回應欄位與錯誤碼都在 OpenAPI schema 裡**，兩個文件頁都讀得到，
+不必翻原始碼。
 
 功能端點都在 **`/v1`** 之下，依用途分成五類；`/healthz` 與 `/version` 不帶版本前綴，
 因為它們描述的是服務本身而非 API 契約——監控與部署不該因 API 改版而失效。

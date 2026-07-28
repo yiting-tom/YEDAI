@@ -6,8 +6,13 @@
 
 ```bash
 uv run yedai serve -c config.local.yaml
-# 互動式文件： http://127.0.0.1:8000/docs
+# Swagger： http://127.0.0.1:8000/docs
+# ReDoc：   http://127.0.0.1:8000/redoc
 ```
+
+回應欄位的**權威來源是 OpenAPI schema**（`/docs`、`/redoc`、`/openapi.json`）。
+本文件的回應結構是給人讀的摘要，兩者由 `tests/test_docs_sync.py` 強制同步——
+schema 多一個欄位而這裡沒提到，測試就會紅。
 
 ---
 
@@ -432,7 +437,8 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 ```
 bundles, concepts, avg_concept_chars, avg_figures_per_concept
 vocab_naive, vocab_protected                  兩套詞彙空間各自的詞彙量
-entities_total / from_dictionary / from_regex_fallback
+entities_total
+entities_from_dictionary / entities_from_regex_fallback
 entities_by_type{}                            類型 → {total, dict, regex}
 dangling_related                              懸空關聯總數
 parse_skipped, parse_warnings

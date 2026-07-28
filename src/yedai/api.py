@@ -26,6 +26,18 @@ from .graph import DIRECTIONS, MAX_DEPTH, neighbors as expand_neighbors
 from .grep import DEFAULT_MAX_RESULTS, InvalidPattern, ScopeRequired, UnknownScope, grep as run_grep
 from .index import INDEX_FORMAT_VERSION, Index
 from .runtime import Runtime
+from .schemas import (
+    ConceptOut,
+    ConceptsOut,
+    FeedbackOut,
+    GrepOut,
+    HealthOut,
+    NeighborsOut,
+    ReportOut,
+    SearchOut,
+    StatsOut,
+    VersionOut,
+)
 from .search import MODES, SearchOutcome, Searcher
 from .telemetry import TelemetryStore, build_report
 
@@ -190,12 +202,24 @@ def _outcome_payload(outcome: SearchOutcome, query_id: str, requested: str) -> d
     }
 
 
-@app.get("/healthz", summary="健康檢查（不版本化）", tags=["ops"])
+@app.get(
+    "/healthz",
+    summary="健康檢查（不版本化）",
+    tags=["ops"],
+    response_model=HealthOut,
+    response_model_exclude_unset=True,
+)
 def healthz() -> dict[str, Any]:
     return {"status": "ok", "index_loaded": state.loaded, "error": state.error}
 
 
-@app.get("/version", summary="版本資訊（不版本化）", tags=["ops"])
+@app.get(
+    "/version",
+    summary="版本資訊（不版本化）",
+    tags=["ops"],
+    response_model=VersionOut,
+    response_model_exclude_unset=True,
+)
 def version() -> dict[str, Any]:
     """索引未載入時仍須可回應——這個端點的用途之一就是診斷載入失敗。"""
     loaded = state.index if state.loaded else None
@@ -211,7 +235,14 @@ def version() -> dict[str, Any]:
     }
 
 
-@router.get("/stats", summary="語料統計與索引狀態", tags=["ops"], responses=_errs(503))
+@router.get(
+    "/stats",
+    summary="語料統計與索引狀態",
+    tags=["ops"],
+    response_model=StatsOut,
+    response_model_exclude_unset=True,
+    responses=_errs(503),
+)
 def stats() -> dict[str, Any]:
     _require_index()
     s = state.index.stats
@@ -236,7 +267,14 @@ def stats() -> dict[str, Any]:
     }
 
 
-@router.get("/search", summary="查詢（單模式或三模式並排）", tags=["retrieval"], responses=_errs(503))
+@router.get(
+    "/search",
+    summary="查詢（單模式或三模式並排）",
+    tags=["retrieval"],
+    response_model=SearchOut,
+    response_model_exclude_unset=True,
+    responses=_errs(503),
+)
 def search(
     q: str = Query(..., min_length=1, description="查詢字串"),
     mode: ModeParam = Query("compare", description="A / B / C，或 compare 三模式並排"),
@@ -270,6 +308,8 @@ def search(
         "`include_raw=false` 時只回結構化欄位，省去原始全文的體積。"
     ),
     tags=["content"],
+    response_model=ConceptsOut,
+    response_model_exclude_unset=True,
     responses=_errs(503),
 )
 def concepts(payload: ConceptsIn = Body(...)) -> dict[str, Any]:
@@ -337,6 +377,8 @@ def asset(
         f"`depth` 上限 {MAX_DEPTH}。指向語料中不存在 id 的懸空引用列於 `dangling`。"
     ),
     tags=["graph"],
+    response_model=NeighborsOut,
+    response_model_exclude_unset=True,
     responses=_errs(404, 503),
 )
 def neighbors(
@@ -363,6 +405,8 @@ def neighbors(
         "預設字面比對；`regex=true` 才啟用正則（使用者正則可能觸發災難性回溯）。"
     ),
     tags=["retrieval"],
+    response_model=GrepOut,
+    response_model_exclude_unset=True,
     responses=_errs(404, 503),
 )
 def grep(
@@ -400,6 +444,8 @@ def grep(
         "全文於請求時從磁碟讀取，因此檔案變更會立即反映，無須重建索引。"
     ),
     tags=["content"],
+    response_model=ConceptOut,
+    response_model_exclude_unset=True,
     responses=_errs(404, 410, 500, 503),
 )
 def concept(concept_id: str) -> dict[str, Any]:
@@ -415,7 +461,14 @@ def concept(concept_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=410, detail=str(exc)) from None
 
 
-@router.post("/feedback", summary="記錄點選回饋", tags=["telemetry"], responses=_errs(404, 503))
+@router.post(
+    "/feedback",
+    summary="記錄點選回饋",
+    tags=["telemetry"],
+    response_model=FeedbackOut,
+    response_model_exclude_unset=True,
+    responses=_errs(404, 503),
+)
 def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     _require_index()
     try:
@@ -431,7 +484,14 @@ def feedback(payload: FeedbackIn = Body(...)) -> dict[str, Any]:
     return {"status": "recorded", "query_id": payload.query_id}
 
 
-@router.get("/report", summary="去識別化統計報告（可安全分享）", tags=["telemetry"], responses=_errs(503))
+@router.get(
+    "/report",
+    summary="去識別化統計報告（可安全分享）",
+    tags=["telemetry"],
+    response_model=ReportOut,
+    response_model_exclude_unset=True,
+    responses=_errs(503),
+)
 def report() -> dict[str, Any]:
     _require_index()
     return build_report(state.index, state.store, state.config)

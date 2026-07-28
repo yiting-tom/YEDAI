@@ -65,6 +65,45 @@ def test_doc_declares_no_stale_endpoints(doc: str, spec: dict) -> None:
     assert not stale, f"docs/api.md 提到了不存在的端點：{stale}"
 
 
+def _resolve(spec: dict, node: dict) -> dict:
+    """跟著 $ref 走到實際的 schema 定義。"""
+    while "$ref" in node:
+        name = node["$ref"].rsplit("/", 1)[-1]
+        node = spec["components"]["schemas"][name]
+    return node
+
+
+def _response_schema(spec: dict, op: dict) -> dict | None:
+    content = op["responses"].get("200", {}).get("content", {})
+    node = content.get("application/json", {}).get("schema")
+    return _resolve(spec, node) if node else None
+
+
+def test_every_json_endpoint_declares_a_response_schema(spec: dict) -> None:
+    """沒有回應 schema 的端點，在 /docs 上是一片空白——呼叫端只能去讀原始碼。"""
+    bare = []
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            if path.endswith("/asset"):  # 回二進位檔案，沒有 JSON schema
+                continue
+            schema = _response_schema(spec, op)
+            if not schema or not schema.get("properties"):
+                bare.append(f"{method.upper()} {path}")
+    assert not bare, f"這些端點的 200 回應沒有欄位描述：{bare}"
+
+
+def test_response_fields_are_documented(doc: str, spec: dict) -> None:
+    """回應欄位才是呼叫端真正要的東西，漏在文件外等於沒寫。"""
+    missing = []
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            schema = _response_schema(spec, op)
+            for field in (schema or {}).get("properties", {}):
+                if f"`{field}`" not in doc and field not in doc:
+                    missing.append(f"{method.upper()} {path} → {field}")
+    assert not missing, f"docs/api.md 缺少回應欄位：{sorted(set(missing))}"
+
+
 def test_declared_codes_match_actual_behaviour(client) -> None:
     """OpenAPI 宣告的錯誤碼必須是實際會發生的，不能只是裝飾。"""
     assert client.get("/v1/concept/cpt_nope").status_code == 404
