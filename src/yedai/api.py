@@ -45,7 +45,7 @@ from .telemetry import TelemetryStore, build_report
 #: 因為它們描述的是服務本身而非 API 契約——監控不該因 API 改版而失效。
 API_VERSION = "v1"
 
-ModeParam = Literal["A", "B", "C", "compare"]
+ModeParam = Literal["A", "B", "C", "D", "E", "compare"]
 DirectionParam = Literal["out", "in", "both"]
 
 #: 分類依 agent 的工作流切分，所以分組本身就是使用指引。
@@ -99,7 +99,7 @@ class FeedbackIn(BaseModel):
     query_id: str = Field(..., description="來自 /search 回應的查詢識別碼")
     concept_id: str = Field(..., description="被點選的 concept id")
     rank: int = Field(..., ge=1, description="被點選項目在該模式結果中的排名")
-    mode: Literal["A", "B", "C"] = Field(..., description="該結果來自哪個模式")
+    mode: Literal["A", "B", "C", "D", "E"] = Field(..., description="該結果來自哪個模式")
     action: str = Field("click", description="動作類型")
 
 
@@ -277,7 +277,7 @@ def stats() -> dict[str, Any]:
 )
 def search(
     q: str = Query(..., min_length=1, description="查詢字串"),
-    mode: ModeParam = Query("compare", description="A / B / C，或 compare 三模式並排"),
+    mode: ModeParam = Query("compare", description="A / B / C / D / E，或 compare 並排全部可用模式"),
     k: Optional[int] = Query(None, ge=1, le=100, description="回傳筆數"),
 ) -> dict[str, Any]:
     _require_index()

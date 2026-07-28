@@ -12,11 +12,14 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import Config
+from .embedding import CachedEmbedder, EmbeddingError, HttpEmbeddingClient
 from .entities import EntityDictionary, EntitySourceError
 from .formats import FULL, INTACT, NONE, PARTIAL, check_coverage, load_samples
+from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
 from .index import Index, build_index
-from .search import MODES, ModeResult, Searcher
+from .search import MODES, ModeResult, ModeUnavailable, Searcher, VectorSearcher
 from .telemetry import TelemetryStore, build_report
+from .vectors import CorpusLeakGuard, VectorStore, guard_corpus_leaves_process
 
 app = typer.Typer(add_completion=False, help="OKF bundle 關鍵字檢索 baseline harness（A/B/C 消融）")
 console = Console()
@@ -43,7 +46,46 @@ def _dictionary(cfg: Config) -> EntityDictionary:
         raise typer.Exit(2) from exc
 
 
-def _searcher(cfg: Config) -> Searcher:
+def _load_dotenv(path: Path = Path(".env")) -> None:
+    """把 `.env` 讀進環境變數。已存在的變數不覆蓋——explicit export 應該贏過檔案。"""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def _embedder(cfg: Config) -> CachedEmbedder:
+    _load_dotenv()
+    e = cfg.embedding
+    client = HttpEmbeddingClient(
+        base_url=e["base_url"],
+        model=e["model"],
+        dim=int(e["dim"]),
+        api_key_env=e["api_key_env"],
+        batch_size=int(e.get("batch_size", 32)),
+        timeout=float(e.get("timeout", 60.0)),
+        max_retries=int(e.get("max_retries", 4)),
+    )
+    return CachedEmbedder(client, e.get("cache_dir"))
+
+
+def _vector_store(cfg: Config) -> VectorStore:
+    v = cfg.vector
+    api_key = os.environ.get(v["api_key_env"]) if v.get("api_key_env") else None
+    return VectorStore(
+        dim=int(cfg.embedding["dim"]),
+        path=v.get("path"),
+        url=v.get("url"),
+        collection=v.get("collection", "yedai"),
+        api_key=api_key,
+    )
+
+
+def _searcher(cfg: Config, with_vectors: bool = False) -> Searcher:
     dictionary = _dictionary(cfg)
     try:
         idx = Index.load(cfg.index_path)
@@ -51,7 +93,17 @@ def _searcher(cfg: Config) -> Searcher:
     except (FileNotFoundError, ValueError) as exc:
         err.print(f"[red]索引錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
-    return Searcher(idx, cfg, dictionary)
+
+    vectors = None
+    if with_vectors:
+        store = _vector_store(cfg)
+        # 有向量才接上。沒有就讓 D/E 明確地「不可用」——這比接上一個空的向量庫
+        # 然後回傳零筆結果好得多：後者看起來像「稠密腿沒有用」。
+        if store.has_vectors():
+            vectors = VectorSearcher(store, _embedder(cfg))
+        else:
+            store.close()
+    return Searcher(idx, cfg, dictionary, vectors=vectors)
 
 
 def _render(result: ModeResult, show_legs: bool = False) -> Table:
@@ -133,19 +185,102 @@ def index(
 
 
 @app.command()
+def embed(
+    bundles: Path = typer.Argument(..., help="bundle 根目錄（用於判定語料是否為合成）"),
+    config: Optional[Path] = ConfigOpt,
+    batch: int = typer.Option(64, "--batch", help="每次寫入向量庫的筆數"),
+) -> None:
+    """為每個 concept 產生向量並寫入向量庫（模式 D / E 的前置）。"""
+    cfg = _config(config)
+    _load_dotenv()
+    base_url = cfg.embedding["base_url"]
+
+    # 送出之前的最後一道閘。一旦送出就收不回來，所以預設是拒絕而不是警告。
+    try:
+        guard_corpus_leaves_process(
+            bundles, base_url, bool(cfg.embedding.get("trusted_endpoint", False))
+        )
+    except CorpusLeakGuard as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    dictionary = _dictionary(cfg)
+    try:
+        idx = Index.load(cfg.index_path)
+        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
+    except (FileNotFoundError, ValueError) as exc:
+        err.print(f"[red]索引錯誤：[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    store = _vector_store(cfg)
+    store.ensure_collection()
+    embedder = _embedder(cfg)
+
+    max_chars = int(cfg.embedding.get("max_chars", 6000))
+    texts = [_embed_text(idx, meta, max_chars) for meta in idx.docs]
+    console.print(
+        f"{len(texts)} 個 concept → [cyan]{base_url}[/cyan]  "
+        f"model=[cyan]{cfg.embedding['model']}[/cyan] dim={cfg.embedding['dim']}"
+    )
+
+    written = 0
+    try:
+        with console.status("嵌入中…") as status:
+            for start in range(0, len(texts), batch):
+                chunk = texts[start : start + batch]
+                vectors = embedder.embed(chunk)
+                store.upsert(
+                    [
+                        (idx.docs[start + i].concept_id, vec)
+                        for i, vec in enumerate(vectors)
+                    ]
+                )
+                written += len(chunk)
+                status.update(f"嵌入中… {written}/{len(texts)}")
+    except EmbeddingError as exc:
+        err.print(f"[red]嵌入失敗：[/red] {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        store.close()
+
+    console.print(
+        f"已寫入 [green]{written}[/green] 個向量"
+        f"（快取命中 {embedder.hits}／請求 {embedder.misses}）"
+    )
+
+
+def _embed_text(idx: Index, meta, max_chars: int) -> str:
+    """一個 concept 一個向量：標題／描述／標籤 + 內文。
+
+    內文必須進來——稠密腿的價值在於「用詞與文件不重疊時仍找得到」，
+    只嵌標題等於把它降級成一個比較模糊的關鍵字檢索，然後得出「稠密沒有用」的結論。
+
+    刻意**不分塊**：分塊會同時改變召回粒度與融合行為，兩個變因一起動就分不出是誰的功勞。
+    等 D 與 E 的數字出來再決定值不值得。超長者截斷，並在此留下記號。
+    """
+    head = "\n".join(p for p in (meta.title, meta.description, " ".join(meta.tags or [])) if p)
+    try:
+        body = load_concept(idx, meta.concept_id).get("raw", "")
+    except (ConceptNotFound, ConceptFileMissing, ConceptPathEscape):
+        body = ""
+    text = f"{head}\n\n{body}".strip()
+    return text[:max_chars]
+
+
+@app.command()
 def search(
     query: str = typer.Argument(..., help="查詢字串"),
-    mode: str = typer.Option("C", "--mode", "-m", help="檢索模式：A / B / C"),
+    mode: str = typer.Option("C", "--mode", "-m", help="檢索模式：A / B / C / D / E"),
     k: Optional[int] = typer.Option(None, "--top", "-k", help="回傳筆數"),
     config: Optional[Path] = ConfigOpt,
     log: bool = typer.Option(True, help="是否寫入查詢日誌"),
 ) -> None:
     """以單一模式查詢。"""
     cfg = _config(config)
-    searcher = _searcher(cfg)
+    searcher = _searcher(cfg, with_vectors=True)
     try:
         result = searcher.search(query, mode, k)
-    except ValueError as exc:
+    except (ValueError, ModeUnavailable) as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
 

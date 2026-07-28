@@ -42,3 +42,8 @@ docs-e2e.png
 
 # Claude Code 本機設定
 .claude/settings.local.json
+
+# API 金鑰。這個 repo 是公開的——金鑰進版控等同外洩。
+.env
+.env.*
+!.env.example

@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import pytest
 
-from yedai.search import MODES, jaccard, kendall_tau
+from yedai.search import LEXICAL_MODES, MODES, ModeUnavailable, jaccard, kendall_tau
 
 
 def test_all_modes_available(searcher) -> None:
-    for mode in MODES:
+    for mode in searcher.available_modes:
         assert searcher.search("PARTICLE", mode=mode, k=3).mode == mode
+
+
+def test_dense_modes_are_unavailable_without_vectors(searcher) -> None:
+    """沒有向量時 D/E 必須不可用，而不是退化成 C。
+
+    退化會讓報告顯示「稠密腿沒有帶來差異」，而真相是它根本沒有執行——
+    那個假象會被當成結論，而且沒有任何地方會露出破綻。
+    """
+    assert searcher.available_modes == LEXICAL_MODES
+    for mode in ("D", "E"):
+        with pytest.raises(ModeUnavailable):
+            searcher.search("PARTICLE", mode=mode, k=3)
 
 
 def test_unknown_mode_rejected(searcher) -> None:
@@ -59,9 +71,9 @@ def test_index_line_format(searcher) -> None:
 
 def test_compare_returns_all_modes_and_overlaps(searcher) -> None:
     outcome = searcher.compare("XTR-05 PARTICLE", k=5)
-    assert set(outcome.results) == set(MODES)
+    assert set(outcome.results) == set(searcher.available_modes)
     assert {o.pair for o in outcome.overlaps} == {"A-B", "A-C", "B-C"}
-    assert sorted(outcome.display_order) == sorted(MODES)
+    assert sorted(outcome.display_order) == sorted(searcher.available_modes)
 
 
 def test_compare_records_query_entities(searcher) -> None:

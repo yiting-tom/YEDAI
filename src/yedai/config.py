@@ -56,6 +56,37 @@ class Config:
     fusion_lexical: float = 0.4
     fusion_entity: float = 0.6
 
+    # --- 稠密腿（模式 D / E）---
+    #: OpenAI 相容的 `/embeddings`。開發期指向 OpenRouter，production 指向
+    #: LiteLLM 代理的 self-host vLLM——兩者只差這個欄位。
+    #: `api_key_env` 是**環境變數名稱**，不是金鑰本身：設定檔會進版控。
+    #: `trusted_endpoint` 是語料外流閘門，預設關閉，詳見 vectors.guard_corpus_leaves_process。
+    embedding: dict[str, Any] = field(
+        default_factory=lambda: {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen/qwen3-embedding-8b",
+            "dim": 4096,
+            "api_key_env": "OPENROUTER_API_KEY",
+            "batch_size": 32,
+            "timeout": 60.0,
+            "max_retries": 4,
+            "cache_dir": ".index/embed-cache",
+            "max_chars": 6000,
+            "trusted_endpoint": False,
+        }
+    )
+    #: 向量庫。`url` 留空即用本機檔案模式，不必另外架服務。
+    vector: dict[str, Any] = field(
+        default_factory=lambda: {
+            "path": ".index/qdrant",
+            "url": None,
+            "collection": "yedai",
+            "api_key_env": None,
+        }
+    )
+    #: RRF 的平滑常數。固定 60（慣例值）——在有真實查詢與人工判斷之前調它，調的是雜訊。
+    rrf_k: int = 60
+
     # --- 資產 ---
     #: 允許透過資產端點讀取的目錄名稱。這是**服務期政策**，不進索引簽章——
     #: 改一個安全設定不該迫使 220 萬個 concept 重建索引。
@@ -129,6 +160,21 @@ class Config:
                     f"entity_sources[{i}] 的 schema {src['schema']!r} 不支援；"
                     f"可用的有 {list(CSV_SCHEMAS)}"
                 )
+
+        if int(self.embedding.get("dim", 0)) <= 0:
+            raise ValueError("embedding.dim must be > 0")
+        if not str(self.embedding.get("base_url", "")).strip():
+            raise ValueError("embedding.base_url must not be empty")
+        if not str(self.embedding.get("model", "")).strip():
+            raise ValueError("embedding.model must not be empty")
+        # 金鑰本身出現在設定裡是外洩，不是設定錯誤——這裡要的是**環境變數名稱**。
+        if str(self.embedding.get("api_key_env", "")).startswith("sk-"):
+            raise ValueError(
+                "embedding.api_key_env 是環境變數名稱，不是金鑰本身。"
+                "設定檔會進版控，把金鑰寫在這裡等同外洩。"
+            )
+        if self.rrf_k <= 0:
+            raise ValueError("rrf_k must be > 0")
 
     # ------------------------------------------------------------------
 
