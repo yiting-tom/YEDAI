@@ -216,6 +216,18 @@ class EntityDictionary:
     def lookup_normalised(self, norm: str) -> tuple[str, str] | None:
         return self._alias.get(norm)
 
+    def surface_forms(self) -> dict[tuple[str, str], list[str]]:
+        """(type, canonical) → 這個實體在字典裡登記過的所有寫法。
+
+        給查詢產生器用：中文俗稱與縮寫是**只有字典認得**的寫法，
+        拿它們造查詢才問得出「字典那條腿有沒有用」。用正規名稱造查詢問不出來——
+        正規名稱本來就是識別碼形狀，模式 B 自己就抓得到。
+        """
+        out: dict[tuple[str, str], list[str]] = {}
+        for surface, (etype, canonical) in self._literal.items():
+            out.setdefault((etype, canonical), []).append(surface)
+        return out
+
     def literal_scan(self, text: str) -> list[tuple[str, str, str]]:
         """對含中文/空白的 alias 做最長優先掃描。回傳 (raw, type, canonical)。"""
         if not self._literal:

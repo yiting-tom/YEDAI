@@ -71,18 +71,40 @@ uv run yedai index /path/to/your/bundles -c config.local.yaml
 cp identifier-samples.example.yaml identifier-samples.local.yaml   # 填入真實形狀
 uv run yedai check-formats -c config.local.yaml
 
-# 4. 查詢
+# 4.（選用）建向量庫，啟用模式 D / E
+#    ⚠️ 這會把 concept 全文送到設定的 base_url。非合成語料預設會被拒絕執行，
+#       確認端點可信後才在 config 宣告 trusted_endpoint。見 docs/dense.md
+cp .env.example .env                          # 填入金鑰；.env 已被 gitignore
+uv run yedai embed /path/to/your/bundles -c config.local.yaml
+
+# 5. 查詢
 uv run yedai search "XTR-05 的 particle 問題" -c config.local.yaml -m C
 
-# 5. 三模式並排 + 重疊度
+# 6. 各模式並排 + 重疊度
 uv run yedai compare "XTR-05 的 particle 問題" -c config.local.yaml
 
-# 6. 批次跑一整份查詢清單
-uv run yedai compare -f queries.txt -c config.local.yaml
+# 7. 產一份查詢清單（真實查詢拿不到時）
+#    識別碼、別名、描述詞全部從你的索引與字典取樣，只有句型是造的
+uv run yedai gen-queries -n 40 -c config.local.yaml   # → queries.local.txt（已 gitignore）
 
-# 7. 產出可分享的去識別化報告
+# 8. 批次跑一整份查詢清單
+uv run yedai compare -f queries.local.txt -c config.local.yaml
+
+# 9. 產出可分享的去識別化報告
 uv run yedai report -o report.json -c config.local.yaml
 ```
+
+### 關於產生的查詢清單
+
+真實查詢是這個實驗唯一的人力瓶頸。拿不到時 `gen-queries` 是替代方案，但要清楚它的界線：
+
+**它能回答**：這些機制在你的語料上**會不會改變結果**。識別碼與其頻率分佈都是真的，
+所以「模式 B 相對 A 改變了多少排名」是一個真的量測。
+
+**它不能回答**：工程師是不是真的這樣查。句型是造的，各組成的比例也是訂的。
+
+所以比例是參數，而且會寫進產出檔的檔頭。**換一組比例重跑**，就能看出結論對這個假設有多敏感——
+一個對比例極度敏感的結論本來就不該被採信。有真實查詢時，直接餵真的那份。
 
 ## HTTP API
 

@@ -47,3 +47,6 @@ docs-e2e.png
 .env
 .env.*
 !.env.example
+
+# 產生的查詢清單。內含真實識別碼，同 corpus 一樣不得進版控。
+*.local.txt

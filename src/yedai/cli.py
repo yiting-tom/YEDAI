@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -17,8 +18,15 @@ from .entities import EntityDictionary, EntitySourceError
 from .formats import FULL, INTACT, NONE, PARTIAL, check_coverage, load_samples
 from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
 from .index import Index, build_index
+from .queries import (
+    DEFAULT_MIX,
+    generate as generate_queries,
+    load as load_queries,
+    render as render_queries,
+)
 from .search import MODES, ModeResult, ModeUnavailable, Searcher, VectorSearcher
 from .telemetry import TelemetryStore, build_report
+from .tokenizer import Tokenizer
 from .vectors import CorpusLeakGuard, VectorStore, guard_corpus_leaves_process
 
 app = typer.Typer(add_completion=False, help="OKF bundle 關鍵字檢索 baseline harness（A/B/C 消融）")
@@ -319,11 +327,14 @@ def compare(
         if not file.exists():
             err.print(f"[red]找不到查詢檔：[/red] {file}")
             raise typer.Exit(2)
-        queries += [ln.strip() for ln in file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        # 必須濾掉 `#` 開頭：`gen-queries` 的檔頭記錄了組成與種子，
+        # 把它當成查詢會讓一整批註解文字混進統計裡。
+        queries += load_queries(file)
 
-    searcher = _searcher(cfg)
+    searcher = _searcher(cfg, with_vectors=True)
     store = TelemetryStore.create(cfg)
-    agg: dict[str, list[float]] = {"A-B": [], "A-C": [], "B-C": []}
+    # 寫死配對會在模式增加時靜靜漏掉新的那幾組，而漏掉的正是新機制值不值得的依據。
+    agg: dict[str, list[float]] = defaultdict(list)
     single = len(queries) == 1
 
     for q in queries:
@@ -392,6 +403,53 @@ def report(
         console.print(f"報告已寫入 [green]{out}[/green]（不含任何語料內容，可直接分享）")
     else:
         console.print_json(blob)
+
+
+@app.command("gen-queries")
+def gen_queries(
+    n: int = typer.Option(40, "--count", "-n", help="產生幾條查詢"),
+    out: Path = typer.Option(Path("queries.local.txt"), "--out", "-o", help="輸出路徑"),
+    seed: int = typer.Option(7, "--seed", "-s", help="亂數種子"),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """從真實語料取樣產生查詢清單（`mode_overlap` 的唯一前置條件）。"""
+    cfg = _config(config)
+    dictionary = _dictionary(cfg)
+    try:
+        idx = Index.load(cfg.index_path)
+        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
+    except (FileNotFoundError, ValueError) as exc:
+        err.print(f"[red]索引錯誤：[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    tok = Tokenizer(cfg.identifier_specs())
+    qs = generate_queries(idx, dictionary, n, tok, seed=seed, mix=DEFAULT_MIX)
+    out.write_text(render_queries(qs, seed, DEFAULT_MIX, cfg.index_path), encoding="utf-8")
+
+    table = Table(title=f"查詢組成（{len(qs.queries)} 條）")
+    table.add_column("組成")
+    table.add_column("筆數", justify="right")
+    for name, count in qs.composition.items():
+        table.add_row(name, str(count))
+    console.print(table)
+
+    pool = Table(title="素材種類數")
+    pool.add_column("來源")
+    pool.add_column("種類", justify="right")
+    for name, size in qs.pool_sizes.items():
+        pool.add_row(name, str(size))
+    console.print(pool)
+    # 缺口要看得見。靜靜補到別組去會讓「模式 C 沒有用」這種結論建立在
+    # 「根本沒有測到模式 C」之上。
+    for name, why in qs.shortfalls.items():
+        err.print(f"[yellow]⚠ {name}：[/yellow] {why}")
+
+    console.print(f"\n已寫入 [green]{out}[/green]")
+    console.print(
+        "[dim]這份清單含真實識別碼，預設路徑已被 gitignore。\n"
+        "它能回答「機制會不會改變結果」，不能回答「工程師是不是這樣查」。[/dim]"
+    )
+    console.print(f"\n接著跑：[cyan]yedai compare -f {out} -c {config or 'config.yaml'}[/cyan]")
 
 
 @app.command("gen-synthetic")
