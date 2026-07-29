@@ -31,7 +31,9 @@ def is_synthetic_corpus(root: Path | str) -> bool:
         return False
 
 
-def guard_corpus_leaves_process(root: Path | str, base_url: str, trusted: bool) -> None:
+def guard_corpus_leaves_process(
+    root: Path | str, base_url: str, trusted: bool, config_key: str = "embedding"
+) -> None:
     """把 concept 全文送出程序之前的最後一道閘。
 
     擋的不是惡意，是「拿開發設定跑了真語料」這種一次就無法挽回的意外——
@@ -46,8 +48,10 @@ def guard_corpus_leaves_process(root: Path | str, base_url: str, trusted: bool) 
         f"拒絕執行：這會把 {Path(root)} 的 concept 全文送到\n"
         f"    {base_url}\n"
         f"而該語料不是合成的。語料一旦送出就收不回來。\n\n"
-        f"若該端點確實是可信的（例如自架的 LiteLLM → vLLM），"
-        f"在設定中宣告：\n    embedding:\n      trusted_endpoint: true"
+        f"若該端點確實是可信的（例如自架的 LiteLLM），在設定中宣告：\n"
+        f"    {config_key}:\n      trusted_endpoint: true\n\n"
+        f"注意 `embedding` 與 `llm` 的宣告**各自獨立**——把信任從一個端點自動延伸到"
+        f"另一個，正是這道閘門要防的事，即使兩者指向同一個位址。"
     )
 
 

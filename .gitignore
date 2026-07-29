@@ -50,3 +50,6 @@ docs-e2e.png
 
 # 產生的查詢清單。內含真實識別碼，同 corpus 一樣不得進版控。
 *.local.txt
+
+# LLM 產生的評估集。查詢是語料衍生物，含真實識別碼。
+*.local.jsonl

@@ -175,7 +175,12 @@ def _dist(values: Iterable[float]) -> dict[str, float]:
     }
 
 
-def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[str, Any]:
+def build_report(
+    index: Index,
+    store: TelemetryStore,
+    config: Config,
+    evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """產出可外流的統計報告。
 
     嚴格規則：任何來自語料或查詢的**文字內容**都不得進入回傳值——
@@ -295,6 +300,9 @@ def build_report(index: Index, store: TelemetryStore, config: Config) -> dict[st
         "queries": query_block,
         "modes": per_mode,
         "mode_overlap": overlaps,
+        # 評估結果只含數字與模式名稱。查詢原文是語料衍生物、帶真實識別碼，
+        # 而報告是唯一設計為可外流的產出——這條界線不因方便而放寬。
+        "evaluation": evaluation,
         "feedback": {
             "total": len(feedback),
             "clicked_rank_distribution": _dist(fb_ranks),

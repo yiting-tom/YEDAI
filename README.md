@@ -42,6 +42,7 @@ D/E 需要向量庫。沒有向量時它們是**不可用**，不是退化成 C�
 | [docs/indexing.md](docs/indexing.md) | 如何建立索引、統計數字怎麼看、何時必須重建 |
 | [docs/agent-tools.md](docs/agent-tools.md) | 六個 agent 工具、建議流程、MCP 接法、常見誤用 |
 | [docs/dense.md](docs/dense.md) | 稠密腿與 RRF、換供應商的設定、語料外流閘門 |
+| [docs/evaluation.md](docs/evaluation.md) | LLM 評估集：recall@k / MRR、標籤的兩個偏誤、怎麼讀 |
 | [openspec/specs/](openspec/specs/) | 規格（需求與情境） |
 
 ## 安裝
@@ -93,6 +94,24 @@ uv run yedai compare -f queries.local.txt -c config.local.yaml
 # 9. 產出可分享的去識別化報告
 uv run yedai report -o report.json -c config.local.yaml
 ```
+
+### 有內部 LLM 的話，還能再往上一層
+
+上面整套只能回答「五個模式的結果**不一樣**」。要回答「哪一個**比較對**」需要標準答案。
+內部 LLM 可以讀 concept 產出「這篇文件是哪個問題的答案」，那就是標籤：
+
+```bash
+uv run yedai gen-evalset ./bundles -n 30 -c config.local.yaml      # → evalset.local.jsonl
+uv run yedai evaluate -f evalset.local.jsonl -o eval.json -c config.local.yaml
+uv run yedai report -e eval.json -o report.json -c config.local.yaml
+```
+
+**先看 `symptom` 那一欄。** 識別碼式查詢上 A/B/C 佔優是預期內的，沒有資訊量；
+不含識別碼的症狀式查詢才能回答「稠密腿值不值得」。
+
+標籤有兩個必須一直帶著的偏誤（只涵蓋單篇相關文件、LLM 會照抄罕見詞），
+所以絕對值不可外推、只能拿模式之間的差距來比。判讀方式見
+[docs/evaluation.md](docs/evaluation.md)。
 
 ### 關於產生的查詢清單
 

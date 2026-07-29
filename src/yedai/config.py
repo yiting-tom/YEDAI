@@ -93,6 +93,24 @@ class Config:
     #: RRF 的平滑常數。固定 60（慣例值）——在有真實查詢與人工判斷之前調它，調的是雜訊。
     rrf_k: int = 60
 
+    # --- LLM（評估集產生）---
+    #: OpenAI 相容的 chat 端點。與 embedding 同一個 LiteLLM 時只差 model 名稱。
+    #: `trusted_endpoint` **獨立於** embedding 的宣告——把信任從一個端點自動延伸到
+    #: 另一個，正是語料外流閘門要防的事，即使兩者現在指向同一個位址。
+    llm: dict[str, Any] = field(
+        default_factory=lambda: {
+            "base_url": "http://litellm.internal/v1",
+            "model": "kimi-k2.7",
+            "api_key_env": "LITELLM_API_KEY",
+            "temperature": 0.0,
+            "timeout": 120.0,
+            "max_retries": 4,
+            "cache_dir": ".index/llm-cache",
+            "max_chars": 4000,
+            "trusted_endpoint": False,
+        }
+    )
+
     # --- 資產 ---
     #: 允許透過資產端點讀取的目錄名稱。這是**服務期政策**，不進索引簽章——
     #: 改一個安全設定不該迫使 220 萬個 concept 重建索引。
@@ -206,6 +224,15 @@ class Config:
             )
         if self.rrf_k <= 0:
             raise ValueError("rrf_k must be > 0")
+        if not str(self.llm.get("base_url", "")).strip():
+            raise ValueError("llm.base_url must not be empty")
+        if not str(self.llm.get("model", "")).strip():
+            raise ValueError("llm.model must not be empty")
+        if str(self.llm.get("api_key_env", "")).startswith("sk-"):
+            raise ValueError(
+                "llm.api_key_env 是環境變數名稱，不是金鑰本身。"
+                "設定檔會進版控，把金鑰寫在這裡等同外洩。"
+            )
 
     # ------------------------------------------------------------------
 

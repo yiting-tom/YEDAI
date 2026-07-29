@@ -17,7 +17,16 @@ from .embedding import CachedEmbedder, EmbeddingError, HttpEmbeddingClient
 from .entities import EntityDictionary, EntitySourceError
 from .formats import FULL, INTACT, NONE, PARTIAL, check_coverage, load_samples
 from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
+from .evalset import (
+    EVALSET_CAVEATS,
+    KINDS,
+    dump as dump_evalset,
+    evaluate as run_evaluation,
+    generate as build_evalset,
+    load as load_evalset,
+)
 from .index import Index, build_index
+from .llm import CachedChat, HttpChatClient
 from .queries import (
     DEFAULT_MIX,
     generate as generate_queries,
@@ -93,7 +102,7 @@ def _vector_store(cfg: Config) -> VectorStore:
     )
 
 
-def _searcher(cfg: Config, with_vectors: bool = False) -> Searcher:
+def _index(cfg: Config) -> Index:
     dictionary = _dictionary(cfg)
     try:
         idx = Index.load(cfg.index_path)
@@ -101,6 +110,12 @@ def _searcher(cfg: Config, with_vectors: bool = False) -> Searcher:
     except (FileNotFoundError, ValueError) as exc:
         err.print(f"[red]索引錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
+    return idx
+
+
+def _searcher(cfg: Config, with_vectors: bool = False) -> Searcher:
+    dictionary = _dictionary(cfg)
+    idx = _index(cfg)
 
     vectors = None
     if with_vectors:
@@ -384,6 +399,9 @@ def compare(
 @app.command()
 def report(
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="輸出 JSON 路徑；省略則印到終端"),
+    evaluation: Optional[Path] = typer.Option(
+        None, "--evaluation", "-e", help="`yedai evaluate -o` 的輸出，併入報告"
+    ),
     config: Optional[Path] = ConfigOpt,
 ) -> None:
     """產出去識別化統計報告（零語料內容，可安全分享）。"""
@@ -395,7 +413,8 @@ def report(
         err.print(f"[red]索引錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
 
-    data = build_report(idx, TelemetryStore.create(cfg), cfg)
+    evals = json.loads(evaluation.read_text(encoding="utf-8")) if evaluation else None
+    data = build_report(idx, TelemetryStore.create(cfg), cfg, evaluation=evals)
     blob = json.dumps(data, ensure_ascii=False, indent=2)
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +422,102 @@ def report(
         console.print(f"報告已寫入 [green]{out}[/green]（不含任何語料內容，可直接分享）")
     else:
         console.print_json(blob)
+
+
+@app.command("gen-evalset")
+def gen_evalset(
+    bundles: Path = typer.Argument(..., help="bundle 根目錄（用於判定語料是否為合成）"),
+    n: int = typer.Option(30, "--count", "-n", help="取樣幾個 concept"),
+    out: Path = typer.Option(Path("evalset.local.jsonl"), "--out", "-o", help="輸出路徑"),
+    seed: int = typer.Option(7, "--seed", "-s", help="取樣種子"),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """讓 LLM 讀 concept 產出「查詢 + 標準答案」，解鎖 recall@k 與 MRR。"""
+    cfg = _config(config)
+    _load_dotenv()
+    base_url = cfg.llm["base_url"]
+
+    # 與 `embed` 同一道閘。信任宣告各自獨立——embedding 可信不代表 LLM 端點可信。
+    try:
+        guard_corpus_leaves_process(
+            bundles, base_url, bool(cfg.llm.get("trusted_endpoint", False)), config_key="llm"
+        )
+    except CorpusLeakGuard as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    idx = _index(cfg)
+    chat = CachedChat(
+        HttpChatClient(
+            base_url=base_url,
+            model=cfg.llm["model"],
+            api_key_env=cfg.llm["api_key_env"],
+            temperature=float(cfg.llm.get("temperature", 0.0)),
+            timeout=float(cfg.llm.get("timeout", 120.0)),
+            max_retries=int(cfg.llm.get("max_retries", 4)),
+        ),
+        cfg.llm.get("cache_dir"),
+    )
+
+    def text_of(meta):
+        return _embed_text(idx, meta, int(cfg.llm.get("max_chars", 4000)))
+
+    console.print(f"取樣 {n} 個 concept → [cyan]{base_url}[/cyan] model=[cyan]{cfg.llm['model']}[/cyan]")
+    with console.status("產生評估集…"):
+        es = build_evalset(idx, chat, n, text_of, seed=seed)
+    dump_evalset(es, out)
+
+    console.print(
+        f"{len(es.items)} 條查詢（取樣 {es.sampled} 篇，失敗 {es.failed} 篇；"
+        f"快取命中 {chat.hits}／請求 {chat.misses}）"
+    )
+    if es.failed:
+        # 失敗數要看得見：靜靜跳過會讓評估集悄悄偏向「LLM 剛好答得出來的那些文件」。
+        err.print(f"[yellow]⚠ {es.failed} 篇回應無法解析，已跳過——評估集因此略偏。[/yellow]")
+    for line in EVALSET_CAVEATS:
+        console.print(f"[dim]• {line}[/dim]")
+    console.print(f"\n已寫入 [green]{out}[/green]（含真實查詢，路徑已 gitignore）")
+    console.print(f"接著跑：[cyan]yedai evaluate -f {out} -c {config or 'config.yaml'}[/cyan]")
+
+
+@app.command()
+def evaluate(
+    file: Path = typer.Option(Path("evalset.local.jsonl"), "--file", "-f", help="評估集路徑"),
+    k: int = typer.Option(10, "--top", "-k", help="計算 recall@k / MRR 的深度"),
+    out: Optional[Path] = typer.Option(None, "--out", "-o", help="輸出 JSON 路徑"),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """對每個可用模式算 recall@k 與 MRR，並依查詢種類拆解。"""
+    cfg = _config(config)
+    if not file.exists():
+        err.print(f"[red]找不到評估集：[/red] {file} — 先跑 `yedai gen-evalset`")
+        raise typer.Exit(2)
+
+    es = load_evalset(file)
+    searcher = _searcher(cfg, with_vectors=True)
+    with console.status(f"評估 {len(es.items)} 條查詢 × {len(searcher.available_modes)} 個模式…"):
+        result = run_evaluation(es, searcher, k=k)
+
+    table = Table(title=f"recall@{k} / MRR（標籤只涵蓋單一相關文件，故為下界）")
+    table.add_column("模式")
+    table.add_column(f"recall@{k}", justify="right")
+    table.add_column("MRR", justify="right")
+    for kind in KINDS:
+        table.add_column(f"{kind} recall", justify="right")
+    for mode, m in result["overall"].items():
+        row = [mode, f"{m['recall_at_k']:.3f}", f"{m['mrr']:.3f}"]
+        for kind in KINDS:
+            v = result["by_kind"][mode][kind]["recall_at_k"]
+            row.append("—" if v is None else f"{v:.3f}")
+        table.add_row(*row)
+    console.print(table)
+
+    for line in EVALSET_CAVEATS:
+        console.print(f"[dim]• {line}[/dim]")
+
+    if out:
+        out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"\n已寫入 [green]{out}[/green]")
 
 
 @app.command("gen-queries")
