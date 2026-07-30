@@ -23,7 +23,7 @@ schema 多一個欄位而這裡沒提到，測試就會紅。
 
 | 分類 | 端點 | |
 |---|---|---|
-| **retrieval** | [`GET /v1/search`](#get-v1search) | 三模式檢索，只回菜單 |
+| **retrieval** | [`GET /v1/search`](#get-v1search) | 消融模式檢索，只回菜單 |
 | | [`GET /v1/grep`](#get-v1grep) | 限定範圍的字面／正則搜尋 |
 | **content** | [`GET /v1/concept/{concept_id}`](#get-v1conceptconcept_id) | 單一 concept 全文 |
 | | [`POST /v1/concepts`](#post-v1concepts) | 批次取全文 |
@@ -69,25 +69,33 @@ schema 多一個欄位而這裡沒提到，測試就會紅。
 
 ### `GET /v1/search`
 
-三種消融模式的檢索。**只回摘要清單，不含內容**——由呼叫端決定讀哪幾份完整文件，
+消融模式的檢索。**只回摘要清單，不含內容**——由呼叫端決定讀哪幾份完整文件，
 這保住了「agent 當 reranker、讀完整文件」的性質。
 
 | 參數 | 位置 | 必填 | 預設 | 約束 |
 |---|---|---|---|---|
 | `q` | query | ✅ | — | 至少 1 字 |
-| `mode` | query | | `compare` | `A` / `B` / `C` / `compare` |
+| `mode` | query | | `compare` | `A` / `B` / `C` / `D` / `E` / `compare` |
 | `k` | query | | 設定的 `top_k`（10） | 1–100 |
+
+> ⚠️ **`D` 與 `E` 目前只在 CLI 可用。** HTTP 服務不載入向量庫，所以這兩個值雖然通過
+> 參數驗證，實際會失敗；`mode=compare` 只會並排 A/B/C。稠密腿請用
+> `uv run yedai search -m D` 與 `uv run yedai compare`。詳見
+> [data-flow.md 的缺口表](./data-flow.md#目前流程的缺口)。
 
 **運作**
 
 1. pydantic 驗證參數（不合 → `422`）
-2. `mode=compare` 時對同一查詢跑三次檢索；否則只跑指定模式
+2. `mode=compare` 時對同一查詢跑一次「所有可用模式」；否則只跑指定模式
 3. 各模式的斷詞與計分：
    - **A** 天真斷詞 → `XTR-05` 碎成 `xtr` + `05` → naive 空間 BM25F
    - **B** 識別碼保護斷詞 → `ID:XTR05` 單一詞元 → protected 空間 BM25F
    - **C** = B 的詞彙腿 + 實體字典匹配的實體腿，兩腿正規化後線性融合（預設 0.4 / 0.6）
+   - **D** 查詢向量化後在 Qdrant 取 cosine 最近鄰（需向量庫）
+   - **E** = RRF(C, D)，只吃排名（`k=60`）——BM25 分數與 cosine 相似度沒有共同尺度
 4. 各自 `sort(-score)` 取 top-k，用 doc 位置取回 metadata
-5. compare 模式另計 A-B / A-C / B-C 的 Jaccard 與 Kendall tau
+5. compare 模式另計**所有可用模式兩兩配對**的 Jaccard 與 Kendall tau
+   （只有 A/B/C 時是 A-B / A-C / B-C）
 6. `display_order` 以 seeded RNG 洗牌，降低並排呈現時的位置偏差
 7. 整筆寫入 `logs/queries.jsonl`，回傳 `query_id`
 
@@ -100,7 +108,7 @@ query_id            供 /v1/feedback 關聯
 query, requested_mode, k
 display_order       ["C","A","B"]  compare 模式才有
 entities[]          {type, canonical, raw, source}   source ∈ dict|regex
-results{A|B|C}      {mode, candidates, hits[]}
+results{A|B|C|D|E}  {mode, candidates, hits[]}       只含實際跑過的模式
   hits[]            {rank, concept_id, bundle_id, type, title, description,
                      path, score, lexical_score, entity_score, index_line}
 overlaps[]          {pair, jaccard, kendall_tau, common}
@@ -357,7 +365,7 @@ dangling[]    `related` 指向但語料中不存在的 id
 
 ## telemetry
 
-這一組服務的是 **A/B/C 消融實驗**，不是日常檢索——agent 不需要呼叫。
+這一組服務的是 **A–E 消融實驗**，不是日常檢索——agent 不需要呼叫。
 
 ### `POST /v1/feedback`
 
@@ -372,7 +380,7 @@ dangling[]    `related` 指向但語料中不存在的 id
 | `query_id` | ✅ | — | 來自 `/v1/search` 回應 |
 | `concept_id` | ✅ | — | |
 | `rank` | ✅ | — | ≥ 1 |
-| `mode` | ✅ | — | `A` / `B` / `C` |
+| `mode` | ✅ | — | `A` / `B` / `C` / `D` / `E` |
 | `action` | | `click` | |
 
 **運作**：掃 `logs/queries.jsonl` 驗證 `query_id` 存在（不存在 → `404`，
@@ -405,17 +413,31 @@ entities{}          distinct_entities / from_dictionary / from_regex_fallback
                     / coverage_measurable_types[] 哪些類型的比例算得出來
 queries{}           總數 / 長度分佈 / 含實體比例 / 每查詢實體數分佈
                     / 查詢實體的 dict vs regex 來源 / query_entity_by_type
-modes{A|B|C}        queries / zero_result_rate / hit_count_distribution
+modes{A|B|C|D|E}    queries / zero_result_rate / hit_count_distribution
                     / top_score_distribution
-mode_overlap{}      A-B / A-C / B-C 各自的 jaccard 與 kendall_tau 分佈
+mode_overlap{}      每個實際跑過的模式配對各自的 jaccard 與 kendall_tau 分佈
+                    只有 A/B/C 時是 A-B / A-C / B-C；有向量庫時另有 C-D / C-E 等
+evaluation          `report -e eval.json` 才有，否則為 null
+                    {k, items, model, caveats[],
+                     overall{模式 → n, recall_at_k, mrr},
+                     by_kind{模式 → identifier|symptom → n, recall_at_k, mrr}}
 feedback{}          總數 / 點選排名分佈 / 各模式點選數
 experiment_params{} 該次使用的全部參數——沒有它任何數字都不可重現
 ```
 
 所有分佈都是 `{n, min, p25, median, p75, max, mean}`。
 
-**最關鍵的欄位是 `mode_overlap`**：A-B 的 jaccard 接近 1 代表斷詞層沒有作用、
-B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md#怎麼讀報告)。
+**`mode_overlap` 的配對清單是從日誌裡實際出現的配對推出的，不是寫死的。** 沒跑過的
+模式不會留下一列空分佈——那會讓「這個模式沒有差異」與「這個模式沒有執行」看起來一樣。
+
+**沒有評估集時，最關鍵的欄位是 `mode_overlap`**：A-B 的 jaccard 接近 1 代表斷詞層沒有
+作用、B-C 接近 1 代表字典不值得維護、C-E 接近 1 代表融合不值得那筆 embedding 費用。
+但它只能回答「有沒有不一樣」。
+
+**有 `evaluation` 時就以它為準**——recall@k / MRR 才回答「哪一個比較對」。
+先比各模式的 `by_kind[模式].symptom`：識別碼式查詢上 A/B/C 佔優是預期內的，沒有資訊量。
+`caveats` 隨數字一起帶著，不是免責聲明而是判讀方式，見
+[evaluation.md](./evaluation.md)。判讀方式見 [README](../README.md#怎麼讀報告)。
 
 `entities.by_type` 是解讀 `B-C` 的前提。字典對不同類型的作用相反——對缺陷名這類
 一般詞它是唯一來源（沒有字典該腿歸零），對機台識別碼它只是擋掉 regex 誤圈的白名單。

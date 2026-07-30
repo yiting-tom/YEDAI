@@ -262,8 +262,15 @@ def build_report(
             "top_score_distribution": _dist(top_scores),
         }
 
+    # 配對清單必須從日誌裡實際出現的配對推出，不能寫死。寫死成 A-B/A-C/B-C 會讓
+    # C-D、C-E 這些含稠密腿的配對從報告裡整個消失——而報告是唯一可外流的產出，
+    # 讀者看到的會是「稠密腿沒有產生重疊資料」，而不是「這份報告漏了它」。
+    seen_pairs = {
+        str(o.get("pair")) for q in queries for o in (q.get("overlaps") or []) if o.get("pair")
+    }
+    ordered = [f"{a}-{b}" for i, a in enumerate(MODES) for b in MODES[i + 1 :]]
     overlaps: dict[str, Any] = {}
-    for pair in ("A-B", "A-C", "B-C"):
+    for pair in [p for p in ordered if p in seen_pairs] + sorted(seen_pairs - set(ordered)):
         jac = [o["jaccard"] for q in queries for o in (q.get("overlaps") or []) if o.get("pair") == pair]
         tau = [
             o["kendall_tau"]

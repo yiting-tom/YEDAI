@@ -300,9 +300,26 @@ v7 讓 regex fallback 的實體帶形狀決定的類型，實體鍵因此改變�
 
 ### 不必重建（查詢期才套用）
 
-`k1`、`b`、`field_weights`、`fusion_lexical` / `fusion_entity`、`require_entities`、
-`top_k`、`seed`、`asset_dirs`。後者是**服務期政策**（資產端點的安全白名單），
-改一個安全設定不該迫使整份語料重建索引。**所以調權重做敏感度測試不需要重建索引**，改 config 直接重跑查詢即可。
+`k1`、`b`、`field_weights`、`fusion_lexical` / `fusion_entity`、`rrf_k`、
+`require_entities`、`top_k`、`seed`、`asset_dirs`。最後一項是**服務期政策**
+（資產端點的安全白名單），改一個安全設定不該迫使整份語料重建索引。
+**所以調權重做敏感度測試不需要重建索引**，改 config 直接重跑查詢即可。
+
+`embedding` / `vector` / `llm` 三個區塊也不進簽章——它們不影響倒排索引的內容。
+
+### 重建索引之後，向量庫可能就對不上了
+
+向量庫是獨立的一份資料，`yedai index` 不會動它。所以：
+
+| 語料變動 | 索引 | 向量庫 |
+|---|---|---|
+| 只編輯 concept 內容 | 重建後正確 | ⚠️ 仍是舊內容的向量，**要重跑 `yedai embed`** |
+| 新增 concept | 重建後正確 | ⚠️ 新 concept 沒有向量，在模式 D/E 裡等於不存在 |
+| 刪除 concept | 重建後正確 | 孤兒向量仍會被檢索到，但 `by_id` 查不到而被跳過——所以模式 D 可能回傳**少於 k 筆**，讀 `hit_count_distribution` 時要記得這件事 |
+
+**這個不同步不會報錯。** 索引簽章擋得住「設定變了」，擋不住「語料變了而向量沒跟上」——
+`embed` 只檢查索引簽章，不比對內容雜湊。語料變動後重跑 `index` 再重跑 `embed`
+是唯一安全的順序；embedding 快取會讓沒變的 concept 不重複付費。
 
 ### ⚠️ 編輯內容的不同步陷阱
 

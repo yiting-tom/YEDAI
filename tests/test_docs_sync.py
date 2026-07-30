@@ -39,6 +39,33 @@ def test_every_parameter_is_documented(doc: str, spec: dict) -> None:
     assert not missing, f"docs/api.md 缺少參數：{missing}"
 
 
+def _enum_values(spec: dict, node: dict) -> list[str]:
+    """列舉值可能直接在 schema 上，也可能藏在 anyOf 分支或 $ref 之後。"""
+    node = _resolve(spec, node)
+    if "enum" in node:
+        return [str(v) for v in node["enum"]]
+    out: list[str] = []
+    for branch in node.get("anyOf", []) + node.get("allOf", []):
+        out.extend(_enum_values(spec, branch))
+    return out
+
+
+def test_every_enum_value_is_documented(doc: str, spec: dict) -> None:
+    """列舉值漂移過一次：`mode` 加了 D/E，文件還寫著 `A` / `B` / `C`。
+
+    參數名有沒有出現在文件裡，跟參數**吃什麼值**是兩件事。只檢查前者的話，
+    新增一個模式不會讓任何測試變紅——而呼叫端看文件會以為那個值不存在。
+    """
+    missing = []
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            for prm in op.get("parameters", []):
+                for value in _enum_values(spec, prm.get("schema", {})):
+                    if f"`{value}`" not in doc:
+                        missing.append(f"{method.upper()} {path} → {prm['name']}={value}")
+    assert not missing, f"docs/api.md 缺少列舉值：{missing}"
+
+
 def test_every_error_code_is_documented(doc: str, spec: dict) -> None:
     """狀態碼是呼叫端最需要、也最容易漏掉的契約。"""
     missing = []

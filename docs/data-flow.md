@@ -3,8 +3,8 @@
 資料從 OKF bundle 進入系統，到查詢結果與全文回到呼叫端的完整路徑。
 單一端點的參數與回應結構見 [api.md](./api.md)——這份談的是資料如何流動。
 
-系統有**兩個時間上分離的階段**：離線建索引（`yedai index`）與線上查詢（HTTP / CLI）。
-兩者唯一的介面是磁碟上的索引檔與原始 OKF 檔案。
+系統有**兩個時間上分離的階段**：離線建索引（`yedai index`、選用的 `yedai embed`）與
+線上查詢（HTTP / CLI）。兩者唯一的介面是磁碟上的索引檔、向量庫與原始 OKF 檔案。
 
 ---
 
@@ -17,12 +17,17 @@ flowchart LR
   DICT[("實體字典<br/>YAML")]
   SYS["yedai"]
   IDX[("索引快取<br/>.index/*.pkl")]
+  VEC[("向量庫<br/>Qdrant")]
   LOG[("查詢日誌<br/>logs/*.jsonl")]
   RPT(["去識別化報告<br/>可外流"])
+  EP["embedding / chat 端點<br/>LiteLLM → 自架 vLLM"]
 
   OKF -->|解析| SYS
   DICT -->|實體正規化| SYS
   SYS <-->|"建立 / 載入"| IDX
+  SYS <-->|"建立 / 查詢"| VEC
+  SYS -.->|"⚠️ concept 全文<br/>經外流閘門"| EP
+  EP -.->|"向量 / 評估標籤"| SYS
   ENG -->|"query / concept_id"| SYS
   SYS -->|"排序結果 + 全文"| ENG
   SYS -->|追加| LOG
@@ -30,8 +35,13 @@ flowchart LR
   SYS -->|聚合| RPT
 ```
 
-**信任邊界**：`OKF bundle`、`索引快取`、`查詢日誌` 全部含機密內容，只存在本機。
+**信任邊界**：`OKF bundle`、`索引快取`、`向量庫`、`查詢日誌` 全部含機密內容，只存在本機。
 只有 `去識別化報告` 設計為可外流——它不含任何查詢原文或語料內容。
+
+**唯一一條會把語料送出程序的邊**是那條虛線（`yedai embed` 與 `yedai gen-evalset`）。
+它由 `guard_corpus_leaves_process` 把關：非合成語料 + 未宣告信任 → **拒絕執行**，不是警告。
+`embedding` 與 `llm` 的信任宣告**各自獨立**，即使兩者指向同一個位址——把信任從一個端點
+自動延伸到另一個，正是這道閘門要防的事。見 [dense.md](./dense.md)。
 
 ---
 
@@ -79,15 +89,19 @@ flowchart TB
 `Concept.field_texts()` → `title` / `description` / `tags` / `headings` / `figures` / `body`
 （`FIELDS`，`config.py:16`）。BM25F 對每個欄位獨立做長度正規化後加權合併。
 
-### 同一份語料建了三套索引
+### 同一份語料建了三套索引（再加一套選用的向量庫）
 
-| 空間 | 內容 | 服務哪個模式 |
-|---|---|---|
-| `naive` TermSpace | 天真斷詞的倒排索引 | **A** |
-| `protected` TermSpace | 識別碼保護斷詞的倒排索引 | **B**、**C** 的詞彙腿 |
-| `EntitySpace` | 實體倒排索引 + 位置權重 | **C** 的實體腿 |
+| 空間 | 內容 | 服務哪個模式 | 何時建立 |
+|---|---|---|---|
+| `naive` TermSpace | 天真斷詞的倒排索引 | **A** | `yedai index` |
+| `protected` TermSpace | 識別碼保護斷詞的倒排索引 | **B**、**C** 的詞彙腿 | `yedai index` |
+| `EntitySpace` | 實體倒排索引 + 位置權重 | **C** 的實體腿 | `yedai index` |
+| Qdrant collection | concept 摘要文字的稠密向量 | **D**、**E** 的稠密腿 | `yedai embed`（選用） |
 
-三者建在**完全相同的 concept 集合**上，所以 A/B/C 的差異只來自索引方式，不來自語料。
+全部建在**完全相同的 concept 集合**上，所以模式之間的差異只來自索引方式，不來自語料。
+
+**沒有向量庫時 D/E 是不可用，不是退化成 C。** 靜默退化會讓報告顯示「稠密腿沒有帶來
+差異」，而真相是它根本沒有執行——那是這份量測最不該搞混的兩件事。
 
 ### 父子層級展開
 
@@ -117,21 +131,62 @@ aepol1#pm1  →  ID:AEPOL1#PM1     子層：與其他機台的 PM1 不混淆
 
 ---
 
+## Level 1 — 階段一之二：建向量庫（選用）
+
+指令：`yedai embed <bundles-dir> -c config.yaml`
+
+這是**唯一會把語料送出程序**的離線路徑。索引必須先建好——向量庫按 `index.docs` 的
+順序走，沒有索引就沒有要嵌入的清單。
+
+```mermaid
+flowchart TB
+  ROOT[("bundle 根目錄")] --> G{"guard_corpus_leaves_process()<br/><i>vectors.py:34</i>"}
+  CFG[("config：embedding{}")] --> G
+  G -->|"非合成語料<br/>且未宣告 trusted_endpoint"| STOP(["拒絕執行，exit 2<br/>訊息印出目的位址"])
+  G -->|"合成語料 或 已宣告信任"| L1["Index.load() + check_signature()"]
+  L1 -->|"簽章不符"| STOP2(["exit 2：請重建索引"])
+  L1 --> T["_embed_text()<br/>title + description + tags<br/>+ load_concept()['raw']<br/>截斷至 max_chars（6000）"]
+  T --> CH{"CachedEmbedder<br/>鍵 = [model, dim, text]"}
+  CH -->|命中| V[("向量")]
+  CH -->|未命中| API["POST {base_url}/embeddings<br/>依 batch 分批"]
+  API -->|"429 / 5xx"| RT["重試"] --> API
+  API -->|"維度與設定不符"| STOP3(["硬失敗"])
+  API --> V
+  V --> UP["VectorStore.upsert()<br/>id = uuid5(NAMESPACE_URL, concept_id)"]
+  UP --> Q[("Qdrant collection")]
+```
+
+### 三個刻意的決定
+
+**維度不符是硬失敗，不是警告。** 自架的 Qwen3-Embedding 若經 MRL 截短就不是 4096；
+維度錯了仍然算得出看似正常的餘弦相似度，錯誤不會有任何徵兆。同理
+`ensure_collection()` 遇到維度不同的既有集合會**重建**而非沿用——沿用會留下一份
+「部分舊模型、部分新模型」的向量庫，那種混合不報錯，只讓相似度在文件之間不可比。
+
+**point id 由 concept_id 導出**（`uuid5`），所以重跑是覆蓋而非重複寫入。
+
+**快取鍵含 model 與 dim。** 換模型後舊向量自動失效，否則會混出一份對應不到任何
+可解釋產生過程的向量庫。
+
+---
+
 ## Level 1 — 階段二：線上查詢
 
 `GET /v1/search?q=…&mode=compare&k=10`（`api.py:137`）
 
 ```mermaid
 flowchart TB
-  Q(["query"]) --> V{"pydantic 驗證<br/>q≥1字 / mode∈A,B,C,compare / 1≤k≤100"}
+  Q(["query"]) --> V{"pydantic 驗證<br/>q≥1字 / mode∈A,B,C,D,E,compare / 1≤k≤100"}
   V -->|不合| E422(["422"])
   V --> R{"_require_index()<br/><i>api.py:79</i>"}
   R -->|索引未載入| E503(["503"])
-  R --> CMP["Searcher.compare()<br/><i>search.py</i>"]
+  R --> CMP["Searcher.compare()<br/>只跑 available_modes<br/><i>search.py</i>"]
 
   CMP --> MA["模式 A"]
   CMP --> MB["模式 B"]
   CMP --> MC["模式 C"]
+  CMP -.->|"僅在有向量庫時"| MD["模式 D"]
+  CMP -.->|"僅在有向量庫時"| ME["模式 E"]
 
   MA --> A1["Tokenizer.naive(query)"] --> A2["naive.score()<br/>BM25F"]
   MB --> B1["tokenizer.protected(query)"] --> B2["protected.score()<br/>BM25F"]
@@ -144,15 +199,24 @@ flowchart TB
   C3 --> FUSE["max 正規化 + 線性融合<br/>0.4·lex + 0.6·ent"]
   C4 --> FUSE
 
+  MD --> D1["embedder.embed([query])"] --> D2["Qdrant 最近鄰<br/>cosine"]
+  ME --> E1["取 C 與 D 各自到 depth<br/>max(k·5, k)"] --> E2["rrf()<br/>Σ 1/(60 + rank)"]
+
   A2 --> RANK["sort by -score → top-k<br/>doc_idx → docs 第 i 筆取 metadata"]
   B2 --> RANK
   FUSE --> RANK
+  D2 --> RANK
+  E2 --> RANK
 
-  RANK --> OV["jaccard + kendall_tau<br/>A-B / A-C / B-C"]
+  RANK --> OV["jaccard + kendall_tau<br/>可用模式的每個兩兩配對"]
   OV --> SH["display_order 洗牌<br/>（seeded，降低位置偏差）"]
   SH --> LG[("log_query()<br/>→ queries.jsonl<br/>回傳 query_id")]
   LG --> OUT(["JSON：header 菜單<br/>不含內容"])
 ```
+
+> ⚠️ **HTTP 服務目前不載入向量庫**（`runtime.py` 建 `Searcher` 時不帶 `vectors`），
+> 所以走 API 時 `available_modes` 只有 A/B/C，`mode=D`/`E` 會失敗。
+> 稠密腿只在 CLI 可用——見下方[缺口表](#目前流程的缺口)。
 
 ### 計分
 
@@ -179,15 +243,28 @@ score  = num / den  ∈ [0,1]
 
 分母刻意包含語料中不存在的查詢實體——語料涵蓋不了的查詢本來就不該拿滿分。
 
-**融合**（`Searcher._hybrid`）：
+**模式 C 的兩腿融合**（`Searcher._hybrid`）：
 
 ```
 lex_n = lex / max(lex over candidates)     詞彙腿在結果集內做 max 正規化
 final = 0.4 · lex_n + 0.6 · ent            實體腿本身已是 [0,1] 的涵蓋率，不再正規化
 ```
 
-不用 RRF：RRF 只吃排名、會抹掉分數資訊，那樣就無法回答「哪一條腿貢獻了多少」——
-而那正是這套工具存在的目的。
+**模式 E 的跨模式融合**（`rrf`，`search.py`）：
+
+```
+score(doc) = Σ_leg  1 / (rrf_k + rank_leg(doc))    rrf_k = 60，可由設定覆寫
+depth      = max(k · 5, k)                         各腿先各自取到這個深度再融合
+```
+
+**同一份工具裡兩種融合方式不是不一致，是兩個問題。**
+
+模式 C 用線性加權，因為兩條腿都由本工具產生、尺度已知（實體腿本身就是 [0,1]），
+而 C 存在的目的是回答「**哪一條腿貢獻了多少**」——RRF 只吃排名，會把那個資訊抹掉。
+
+模式 E 只能用 RRF，因為 BM25 分數與餘弦相似度**沒有共同尺度**。線性加權它們等於
+偷偷發明一個換算率，而那個換算率會直接決定結論——那不是量測，是調參調到想要的答案。
+代價是 E 無法回答「哪一條腿貢獻多少」，只能回答「融合後有沒有變好」，這正是要問 E 的問題。
 
 ### 回應內容
 
@@ -314,7 +391,7 @@ sequenceDiagram
   participant L as logs/*.jsonl
 
   A->>S: query
-  S->>S: A / B / C 三模式計分 + 重疊度
+  S->>S: 可用模式各自計分 + 兩兩重疊度
   S->>L: log_query() → query_id
   S-->>A: header 菜單（index.md 行格式）+ query_id
   A->>A: 挑 3~7 筆
@@ -337,9 +414,10 @@ sequenceDiagram
 flowchart LR
   SR["/v1/search"] -->|"log_query()"| QJ[("queries.jsonl<br/>含查詢原文<br/>❌ 不外流")]
   FB["POST /v1/feedback"] -->|"has_query() 驗證<br/>不存在 → 404"| FJ[("feedback.jsonl")]
-  QJ --> BR["build_report()<br/><i>telemetry.py:164</i>"]
+  QJ --> BR["build_report()<br/><i>telemetry.py</i>"]
   FJ --> BR
   IDX[("index.stats")] --> BR
+  EV[("eval.json<br/>recall@k / MRR<br/><i>只有數字與模式名</i>")] -.->|"report -e"| BR
   BR --> RP(["/v1/report<br/>✅ 零內容，可分享"])
 ```
 
@@ -347,8 +425,18 @@ flowchart LR
 `tests/test_telemetry.py::test_report_leaks_no_corpus_content` 斷言報告序列化後
 不含任何查詢原文、concept 標題、描述或實體名稱——由測試強制，不靠慣例。
 
-報告中最關鍵的欄位是 `mode_overlap`：A-B 的 jaccard 接近 1 代表斷詞層沒有作用、
-B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md#怎麼讀報告)。
+**評估結果併進報告時只帶數字。** 查詢原文不會進去——它是語料衍生物、帶真實識別碼，
+而報告是唯一設計為可外流的產出。同一條界線也適用於 `evaluation.caveats`：限制跟著
+數字一起走，分家之後絕對值遲早會被引用到不該被引用的地方。
+
+**`mode_overlap` 的配對清單從日誌裡實際出現的配對推出，不寫死。** 寫死成 A-B/A-C/B-C
+會讓 C-D、C-E 從報告裡整個消失，而讀者看到的會是「稠密腿沒有產生重疊資料」——
+不是「這份報告漏了它」。由 `test_report_keeps_every_pair_the_search_produced` 守住。
+
+沒有評估集時最關鍵的欄位是 `mode_overlap`：A-B 的 jaccard 接近 1 代表斷詞層沒有作用、
+B-C 接近 1 代表字典不值得維護、C-E 接近 1 代表融合不值得那筆費用。**有 `evaluation`
+時以它為準**——重疊度只答「有沒有不一樣」，recall@k / MRR 才答「哪一個比較對」。
+判讀方式見 [README](../README.md#怎麼讀報告) 與 [evaluation.md](./evaluation.md)。
 
 ---
 
@@ -359,8 +447,14 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 | OKF bundle 原檔 | 使用者指定路徑 | ✅ | ❌ gitignore |
 | 資產（圖片） | `<bundle>/okf/_assets/` | ✅ | ❌ gitignore |
 | 索引快取 | `.index/*.pkl` | ✅（含 title/description） | ❌ gitignore |
+| 向量庫 | `.index/qdrant`（`vector.path`） | ✅（語料的稠密表示） | ❌ gitignore |
+| embedding 快取 | `.index/embed-cache` | ✅（鍵含原文） | ❌ gitignore |
+| LLM 回應快取 | `.index/llm-cache` | ✅（鍵含 concept 全文） | ❌ gitignore |
+| 產生的查詢清單 | `queries.local.txt` | ✅（含真實識別碼） | ❌ gitignore |
+| LLM 評估集 | `evalset.local.jsonl` | ✅（查詢是語料衍生物） | ❌ gitignore |
 | 完整查詢日誌 | `logs/queries.jsonl` | ✅（含查詢原文） | ❌ gitignore |
 | 點選回饋 | `logs/feedback.jsonl` | ⚠️（含 concept_id） | ❌ gitignore |
+| 評估指標 | `yedai evaluate -o` 指定路徑 | ❌（只有數字） | 可分享 |
 | 去識別化報告 | `yedai report -o` 指定路徑 | ❌ | 可分享 |
 | 合成語料 | `.synthetic/` | ❌ | ❌ gitignore |
 
@@ -375,11 +469,16 @@ B-C 接近 1 代表字典不值得維護。判讀方式見 [README](../README.md
 
 | 缺口 | 影響 |
 |---|---|
+| **HTTP / MCP 不載入向量庫** | `runtime.py` 建 `Searcher` 時不帶 `vectors`，所以走 API 或 MCP 時只有 A/B/C；`mode=D`/`E` 雖然通過參數驗證卻會失敗。稠密腿目前只在 CLI（`yedai search -m D`、`yedai compare`）可用 |
 | **三欄並排 Web UI** | Swagger 沒有可點的結果列表，`/feedback` 實際上收不到人的點選資料——而那是最有價值的隱性相關性標註 |
 | **MCP 的圖片工具** | agent 拿得到圖的 URL 與文字圖說，但看不到圖本身。以 YED 語料而言這個缺口不小——wafer map 與缺陷影像是證據本身 |
 | 寫入路徑（propose / amend / retire） | agent 只能讀，無法把發現回饋成新的 concept |
 | `neighbors` 依 type 過濾 | 高連通度語料上兩跳可能回傳過多 |
 | 結果快取 | 每次 `grep` 都重讀磁碟；本規模下不構成瓶頸 |
 
-其中 **Web UI 是目前唯一擋住資料收集的缺口**：量測迴路（三模式、重疊度、報告）全部就緒，
-但沒有工程師會在 Swagger 上手動貼 `concept_id` 送 `/feedback`。
+**Web UI 仍是唯一擋住資料收集的缺口**：量測迴路（五模式、重疊度、評估集、報告）
+全部就緒，但沒有工程師會在 Swagger 上手動貼 `concept_id` 送 `/feedback`。
+
+**向量庫那條缺口只擋住介面，不擋住實驗**——五個模式的完整比較走 CLI 就跑得完，
+`yedai compare -f queries.local.txt` 與 `yedai evaluate` 都經過 CLI 的 searcher。
+它該補，但它不是結論的前置條件。

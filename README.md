@@ -141,7 +141,7 @@ uv run yedai serve -c config.local.yaml
 
 | 分類 | 端點 | 用途 |
 |---|---|---|
-| **retrieval**<br>找到 concept | `GET /v1/search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`。**只回菜單，不回內容** |
+| **retrieval**<br>找到 concept | `GET /v1/search?q=&mode=&k=` | `mode` 為 `A`/`B`/`C` 或 `compare`。**只回菜單，不回內容**。稠密模式 `D`/`E` 目前只在 CLI 可用 |
 | | `GET /v1/grep` | **限定範圍**的字面／正則搜尋；未給範圍會被拒絕 |
 | **content**<br>取得內容 | `GET /v1/concept/{concept_id}` | 單一 concept 全文（`raw` + `frontmatter` + `sections` + `figures`） |
 | | `POST /v1/concepts` | 批次取全文（最多 50 筆，部分成功語意） |
@@ -154,7 +154,7 @@ uv run yedai serve -c config.local.yaml
 | | `GET /version` | 套件／API／索引格式版本（不版本化） |
 
 前三類正好對應建議流程（search → get → neighbors），所以分組本身就是流程說明。
-`telemetry` 刻意獨立——那兩個端點服務的是 A/B/C 消融實驗，不是日常檢索，agent 不需要呼叫。
+`telemetry` 刻意獨立——那兩個端點服務的是 A–E 消融實驗，不是日常檢索，agent 不需要呼叫。
 
 **逐端點的參數、運作步驟、回應結構與錯誤碼見 [docs/api.md](docs/api.md)。**
 
@@ -246,7 +246,10 @@ curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
 
 ## 怎麼讀報告
 
-最關鍵的單一指標是 **`mode_overlap`**：
+**有 `evaluation` 那一段時就以它為準**——recall@k / MRR 才回答「哪一個比較對」，
+重疊度只回答「有沒有不一樣」。判讀方式見 [docs/evaluation.md](docs/evaluation.md)。
+
+沒有評估集時，最關鍵的單一指標是 **`mode_overlap`**：
 
 ```json
 "mode_overlap": {
@@ -324,5 +327,10 @@ uv run pytest
 
 ## 這不做什麼
 
-刻意不做，因為它是對照組：向量檢索、embedding、reranker、issue family、
-多層導航、graph DB。這些要不要做，由這支工具產出的數據決定。
+刻意不做，因為它是對照組：reranker、issue family、多層導航、graph DB、寫入路徑。
+這些要不要做，由這支工具產出的數據決定。
+
+向量檢索**原本也在這張清單上**，後來被移進來當模式 D/E——因為 A/B/C 答不出
+「關鍵字檢索本身夠不夠」，而那個問題不先答掉，後面所有架構決定都沒有依據。
+它進來的形式仍然是**消融的一條腿**，不是預設路徑：沒有向量庫時 D/E 不可用而非退化，
+而 `C-E` 的重疊度接近 1 就是「不必付這筆 embedding 費用」的直接證據。

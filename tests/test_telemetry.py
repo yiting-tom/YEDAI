@@ -114,6 +114,37 @@ def test_report_contains_required_metrics(searcher, config) -> None:
     assert report["experiment_params"]["fusion_entity"] == config.fusion_entity
 
 
+def test_report_keeps_every_pair_the_search_produced(corpus, config) -> None:
+    """配對清單寫死過三次（search / cli / 這裡），每次都是同一個病。
+
+    報告是唯一設計為可外流的產出。含稠密腿的配對從 `mode_overlap` 消失時不會報錯，
+    讀者看到的是「稠密腿沒有產生重疊資料」——那正好是這份量測要分辨的東西。
+    """
+    from tests.test_dense import FakeEmbedder
+    from yedai.entities import EntityDictionary
+    from yedai.index import build_index
+    from yedai.search import Searcher, VectorSearcher
+    from yedai.vectors import VectorStore
+
+    dictionary = EntityDictionary.load(config.dictionary_path)
+    index = build_index(corpus, config, dictionary)
+    embedder = FakeEmbedder()
+    store_v = VectorStore(dim=embedder.dim, path=None)
+    store_v.ensure_collection()
+    texts = [f"{m.title} {m.description}" for m in index.docs]
+    store_v.upsert(list(zip([m.concept_id for m in index.docs], embedder.embed(texts), strict=True)))
+    searcher = Searcher(index, config, dictionary, vectors=VectorSearcher(store_v, embedder))
+
+    store = TelemetryStore.create(config)
+    outcome = searcher.compare("XTR-05 PARTICLE", k=5)
+    store.log_query(outcome, requested_mode="compare")
+
+    report = build_report(index, store, config)
+    logged = {o.pair for o in outcome.overlaps}
+    assert "C-D" in logged and "C-E" in logged, "前提不成立：這次 compare 沒有跑到稠密腿"
+    assert set(report["mode_overlap"]) == logged
+
+
 def test_report_works_with_no_queries(searcher, config) -> None:
     store = TelemetryStore.create(config)
     report = build_report(searcher.index, store, config)
