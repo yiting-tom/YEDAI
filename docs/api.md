@@ -14,6 +14,23 @@ uv run yedai serve -c config.local.yaml
 本文件的回應結構是給人讀的摘要，兩者由 `tests/test_docs_sync.py` 強制同步——
 schema 多一個欄位而這裡沒提到，測試就會紅。
 
+**每個回應模型都帶範例**，`/docs` 上直接看得到實際形狀。其中兩個端點提供多個具名
+範例，Swagger 會渲染成下拉選單：
+
+| 端點 | 範例 | 它示範什麼 |
+|---|---|---|
+| `GET /v1/search` | 分層（預設） | 含一個**空層**——那是訊號，不是「沒找到」 |
+| | 跨層融合 | `fuse=true` 時 `fused` 長什麼樣，分層結構仍然保留 |
+| `GET /v1/taxonomy/{defect}` | 已整理判斷方法 | `method` 是方法不是答案 |
+| | 已登錄但未整理 | `method` 為空字串，與 404「查無此 defect」是兩件事 |
+
+範例由測試釘住：`test_response_examples_validate_against_their_own_model` 拿模型驗證它
+自己的範例，欄位改名而範例沒跟上就會紅——否則範例會照樣渲染，只是內容已經是假的。
+
+> ⚠️ OpenAPI 產生時會把 `null` 從範例中剔除，所以預設的 `search` 範例裡看不到
+> `fused` 欄位。它在未要求融合時是 `null` 而**不是** `[]`——空清單會讓「沒要求融合」
+> 與「融合後沒有結果」不可區分。要看它的形狀請切到「跨層融合」那個範例。
+
 ---
 
 ## 總覽
@@ -23,13 +40,15 @@ schema 多一個欄位而這裡沒提到，測試就會紅。
 
 | 分類 | 端點 | |
 |---|---|---|
-| **retrieval** | [`GET /v1/search`](#get-v1search) | 消融模式檢索，只回菜單 |
+| **retrieval** | [`GET /v1/search`](#get-v1search) | 分層檢索，只回菜單 |
+| | [`GET /v1/taxonomy/{defect}`](#get-v1taxonomydefect) | defect → 判斷方法（查表，非檢索） |
 | | [`GET /v1/grep`](#get-v1grep) | 限定範圍的字面／正則搜尋 |
 | **content** | [`GET /v1/concept/{concept_id}`](#get-v1conceptconcept_id) | 單一 concept 全文 |
 | | [`POST /v1/concepts`](#post-v1concepts) | 批次取全文 |
 | | [`GET /v1/concept/{concept_id}/asset`](#get-v1conceptconcept_idasset) | 下載資產 |
 | **graph** | [`GET /v1/concept/{concept_id}/neighbors`](#get-v1conceptconcept_idneighbors) | 沿 `related` 展開 |
-| **telemetry** | [`POST /v1/feedback`](#post-v1feedback) | 記錄點選 |
+| **telemetry** | [`GET /v1/compare`](#get-v1compare) | 單一索引內的多模式消融 |
+| | [`POST /v1/feedback`](#post-v1feedback) | 記錄點選 |
 | | [`GET /v1/report`](#get-v1report) | 去識別化統計報告 |
 | **ops** | [`GET /v1/stats`](#get-v1stats) | 語料統計 |
 | | [`GET /healthz`](#get-healthz) | 健康檢查 |
@@ -69,35 +88,45 @@ schema 多一個欄位而這裡沒提到，測試就會紅。
 
 ### `GET /v1/search`
 
-消融模式的檢索。**只回摘要清單，不含內容**——由呼叫端決定讀哪幾份完整文件，
-這保住了「agent 當 reranker、讀完整文件」的性質。
+**分層檢索。** 每一類知識是一個獨立索引（心法 / 已結案 / 缺陷登錄…），各自有自己的
+統計、自己的檢索設定、自己的 query 前處理。回應是**每層一筆**，不跨層排序。
+
+**只回摘要清單，不含內容**——由呼叫端決定讀哪幾份完整文件，這保住了
+「agent 當 reranker、讀完整文件」的性質。
 
 | 參數 | 位置 | 必填 | 預設 | 約束 |
 |---|---|---|---|---|
 | `q` | query | ✅ | — | 至少 1 字 |
-| `mode` | query | | `compare` | `A` / `B` / `C` / `D` / `E` / `compare` |
-| `k` | query | | 設定的 `top_k`（10） | 1–100 |
+| `index` | query | | 全部（分層） | 已宣告的索引名稱；見 [`/v1/stats`](#get-v1stats) |
+| `mode` | query | | 各層宣告的預設 | `A` / `B` / `C` / `D` / `E` |
+| `k` | query | | 各層宣告的深度 | 1–100 |
+| `fuse` | query | | `false` | 是否附上跨索引 RRF 融合清單 |
 
-> ⚠️ **`D` 與 `E` 目前只在 CLI 可用。** HTTP 服務不載入向量庫，所以這兩個值雖然通過
-> 參數驗證，實際會失敗；`mode=compare` 只會並排 A/B/C。稠密腿請用
-> `uv run yedai search -m D` 與 `uv run yedai compare`。詳見
-> [data-flow.md 的缺口表](./data-flow.md#目前流程的缺口)。
+**為什麼預設不混成一份排序**
+
+RRF 融合的前提是**兩份排名在回答同一個問題**。跨模式（C 與 D）滿足——同一份語料、
+同一個問題、失效模式互補。跨索引不滿足：「這篇心法比那筆已結案更相關」不是一個
+有意義的命題，它們回答的不是同一件事。要讓它們比大小就得發明一個共同尺度，
+而那個尺度不存在。
+
+**空的層仍會回傳。** 某層 `hits` 為空，意思是「這類知識裡沒有對應的東西」——那本身
+是資訊。省略它會讓它與「排在 `k` 之外」不可區分。
 
 **運作**
 
-1. pydantic 驗證參數（不合 → `422`）
-2. `mode=compare` 時對同一查詢跑一次「所有可用模式」；否則只跑指定模式
-3. 各模式的斷詞與計分：
+1. pydantic 驗證參數（不合 → `422`）；未宣告的 `index` → `422` 並列出可用名稱
+2. 每層各自套用自己的 query 前處理（例如剝除識別碼），結果記在 `prepared_query`
+3. 每層以自己的模式與深度計分：
    - **A** 天真斷詞 → `XTR-05` 碎成 `xtr` + `05` → naive 空間 BM25F
    - **B** 識別碼保護斷詞 → `ID:XTR05` 單一詞元 → protected 空間 BM25F
    - **C** = B 的詞彙腿 + 實體字典匹配的實體腿，兩腿正規化後線性融合（預設 0.4 / 0.6）
-   - **D** 查詢向量化後在 Qdrant 取 cosine 最近鄰（需向量庫）
+   - **D** 查詢向量化後在該層自己的 Qdrant collection 取 cosine 最近鄰
    - **E** = RRF(C, D)，只吃排名（`k=60`）——BM25 分數與 cosine 相似度沒有共同尺度
-4. 各自 `sort(-score)` 取 top-k，用 doc 位置取回 metadata
-5. compare 模式另計**所有可用模式兩兩配對**的 Jaccard 與 Kendall tau
-   （只有 A/B/C 時是 A-B / A-C / B-C）
-6. `display_order` 以 seeded RNG 洗牌，降低並排呈現時的位置偏差
-7. 整筆寫入 `logs/queries.jsonl`，回傳 `query_id`
+4. `fuse=true` 時另做跨索引**平權** RRF；每筆帶 `index` 與 `source_rank`
+5. 整筆寫入 `logs/queries.jsonl`，回傳 `query_id`
+
+模式消融（多模式並排 + 重疊度）改用 [`GET /v1/compare`](#get-v1compare)——
+它固定在單一索引內，因為跨索引比模式是在比兩件不同的事。
 
 計分公式見 [data-flow.md](./data-flow.md#計分)。
 
@@ -105,24 +134,64 @@ schema 多一個欄位而這裡沒提到，測試就會紅。
 
 ```
 query_id            供 /v1/feedback 關聯
-query, requested_mode, k
-display_order       ["C","A","B"]  compare 模式才有
-entities[]          {type, canonical, raw, source}   source ∈ dict|regex
-results{A|B|C|D|E}  {mode, candidates, hits[]}       只含實際跑過的模式
+query               原始查詢
+shape               "layered" 或 "fused"；遙測據此分開統計，兩者名次不可比
+requested_index     呼叫端指定的索引；未指定為 null
+layers[]            每個索引一筆，含無命中的層
+  index             這一層的索引名稱
+  mode, candidates  candidates 是進入計分的候選數，非回傳筆數
+  prepared_query    這一層實際收到的查詢（前處理後）
   hits[]            {rank, concept_id, bundle_id, type, title, description,
                      path, score, lexical_score, entity_score, index_line}
-overlaps[]          {pair, jaccard, kendall_tau, common}
+fused[]             僅 fuse=true 時非 null；上列 hit 欄位再加 index 與 source_rank
 ```
 
-`lexical_score` / `entity_score` 分開回傳，才看得出模式 C 的兩條腿各自貢獻多少——
-那正是這套工具存在的目的。`kendall_tau` 在共同項目少於兩個時為 `null`。
+`lexical_score` / `entity_score` 分開回傳，才看得出模式 C 的兩條腿各自貢獻多少。
+`source_rank` 是該筆在**自己那一層內**的名次——融合分數看不出來源深淺，這個看得出來。
 
 `index_line` 的格式與 bundle 內 `index.md` 的行格式相同，agent 的既有讀法可直接沿用。
 
 **狀態碼** `200` · `422` · `503`
 
 ```bash
-curl -s "$B/v1/search?q=XTR-05%20PARTICLE&mode=compare&k=10"
+curl -s "$B/v1/search?q=XTR-05%20PARTICLE&k=10"
+curl -s "$B/v1/search?q=overlay%20怎麼查&index=heuristics"
+```
+
+---
+
+### `GET /v1/taxonomy/{defect}`
+
+以 defect 為鍵取回它的判斷方法。**這是查表，不是檢索。**
+
+| 參數 | 位置 | 必填 | 預設 | 約束 |
+|---|---|---|---|---|
+| `defect` | path | ✅ | — | defect 識別碼 |
+
+**查無條目回 `404`，不做近似比對。** 拿另一個 defect 的判斷方法去解讀影像，比沒有
+方法更糟——錯的方法看起來跟對的一樣有條理。上游必須自己處理「這個 defect 還沒有
+整理過方法」，而那是它該知道的事實。
+
+條目內容是**方法不是答案**：它說明怎麼從影像推出候選 module，而不是直接給出清單。
+因此它的正確性無法靜態檢查，只能用歷史結案回放驗證。
+
+覆蓋率（有條目的 defect 佔比）見 [`/v1/stats`](#get-v1stats) 與 [`/v1/report`](#get-v1report)。
+
+**回應**
+
+```
+defect              鍵
+description         這個 defect 在影像上長什麼樣
+method              怎麼從影像推出候選 module
+modules[]           選填的候選提示；多數條目只給方法不給清單
+category            類別（覆蓋率統計依它拆解）
+notes               方法本身的例外或前提
+```
+
+**狀態碼** `200` · `404` · `503`
+
+```bash
+curl -s "$B/v1/taxonomy/DEFECT_ALPHA"
 ```
 
 ---
@@ -367,24 +436,65 @@ dangling[]    `related` 指向但語料中不存在的 id
 
 這一組服務的是 **A–E 消融實驗**，不是日常檢索——agent 不需要呼叫。
 
+### `GET /v1/compare`
+
+對同一查詢並排執行各可用模式，並回傳模式間重疊度。
+
+| 參數 | 位置 | 必填 | 預設 | 約束 |
+|---|---|---|---|---|
+| `q` | query | ✅ | — | 至少 1 字 |
+| `index` | query | | 只有一個索引時可省略 | 已宣告的索引名稱 |
+| `k` | query | | 該層宣告的深度 | 1–100 |
+
+**固定在單一索引內。** 跨索引比模式是在比兩件不同的事——重疊度會變成「這兩層語料
+有多像」而不是「這個干預有沒有作用」。有多個索引而未指定 `index` 時回 `422`。
+
+**運作**：對該層跑一次所有可用模式 → 計算**所有可用模式兩兩配對**的 Jaccard 與
+Kendall tau → `display_order` 以 seeded RNG 洗牌降低並排呈現的位置偏差 → 寫入日誌。
+
+**回應**
+
+```
+query_id, query, index, requested_mode, k
+display_order       ["C","A","B"]  隨機化的呈現順序
+entities[]          {type, canonical, raw, source}   source ∈ dict|regex
+results{A|B|C|D|E}  {mode, candidates, hits[]}       只含實際跑過的模式
+overlaps[]          {pair, jaccard, kendall_tau, common}
+```
+
+`kendall_tau` 在共同項目少於兩個時為 `null`。
+
+**狀態碼** `200` · `422` · `503`
+
+---
+
 ### `POST /v1/feedback`
 
 記錄點選，作為隱性相關性標註。
 
 ```json
-{"query_id": "…", "concept_id": "cpt_…", "rank": 1, "mode": "C", "action": "click"}
+{"query_id": "…", "concept_id": "cpt_…", "rank": 1, "mode": "C", "index": "cases", "action": "click"}
 ```
 
 | 欄位 | 必填 | 預設 | 約束 |
 |---|---|---|---|
 | `query_id` | ✅ | — | 來自 `/v1/search` 回應 |
 | `concept_id` | ✅ | — | |
-| `rank` | ✅ | — | ≥ 1 |
+| `rank` | ✅ | — | ≥ 1；**層內名次** |
 | `mode` | ✅ | — | `A` / `B` / `C` / `D` / `E` |
+| `index` | | 由 `concept_id` 推定 | 已宣告的索引名稱 |
 | `action` | | `click` | |
+
+**`rank` 是該項目在自己那一層內的名次**，不是跨層合併後的位置。用後者會讓排名分佈
+反映層的順序而不是相關性——同一個第 1 名，在四層合併之後可以落在任何位置。
+
+`index` 省略時由 `concept_id` 推定（各層語料不重疊，所以這是明確的）。要求前端記住
+來源層只會讓回饋更難收集，而那正是目前最缺的資料。
 
 **運作**：掃 `logs/queries.jsonl` 驗證 `query_id` 存在（不存在 → `404`，
 因為無法關聯的回饋沒有分析價值），再追加一行到 `logs/feedback.jsonl`。
+
+**回應**：`{status, query_id, index}`——`index` 是這筆點選實際歸屬的索引。
 
 **狀態碼** `200` · `404` · `422` · `503`
 
@@ -405,25 +515,47 @@ dangling[]    `related` 指向但語料中不存在的 id
 
 ```
 report_version, generated_at, note
-corpus{}            bundles / concepts / 平均長度 / 兩套詞彙量 / 詞彙量比值
+by_index{}          索引名稱 → {corpus, entities, modes}  ← **主要視角**
+  corpus{}          bundles / concepts / 平均長度 / 兩套詞彙量 / 詞彙量比值
                     / distinct_types / type_size_distribution / parse_skipped
-entities{}          distinct_entities / from_dictionary / from_regex_fallback
+  entities{}        distinct_entities / from_dictionary / from_regex_fallback
                     / dictionary_coverage
                     / by_type{類型 → total, dict, regex, dictionary_coverage}
                     / coverage_measurable_types[] 哪些類型的比例算得出來
+  modes{}           該層各模式的 queries / zero_result_rate / 分佈
+corpus{}            跨索引彙總：indexes / bundles / concepts / 平均長度
+                    / parse_skipped / parse_warnings + note
 queries{}           總數 / 長度分佈 / 含實體比例 / 每查詢實體數分佈
                     / 查詢實體的 dict vs regex 來源 / query_entity_by_type
-modes{A|B|C|D|E}    queries / zero_result_rate / hit_count_distribution
-                    / top_score_distribution
+modes{A|B|C|D|E}    全部索引合計：queries / zero_result_rate / 分佈
 mode_overlap{}      每個實際跑過的模式配對各自的 jaccard 與 kendall_tau 分佈
                     只有 A/B/C 時是 A-B / A-C / B-C；有向量庫時另有 C-D / C-E 等
+retrieval_shape{}   layered / fused / compare 三種回傳形態各自的統計
+                    layered、fused 另含 empty_layer_rate_by_index
+                    fused 另含 fused_rank_distribution / source_rank_distribution
+                    / fused_contributions_by_index
+taxonomy{}          covered / total / unknown_keys / by_category{類別 → covered, total}
+                    沒有 defect 清單時 total 為 null（分母不可知）
+id_overlap{}        跨層重複的 concept_id：total 與 pairs{"a↔b" → 數量}
+                    各層語料應互斥；非零代表上游重複收錄或 id 沒有跨語料唯一
 evaluation          `report -e eval.json` 才有，否則為 null
                     {k, items, model, caveats[],
                      overall{模式 → n, recall_at_k, mrr},
                      by_kind{模式 → identifier|symptom → n, recall_at_k, mrr}}
-feedback{}          總數 / 點選排名分佈 / 各模式點選數
+feedback{}          總數 / 點選排名分佈 / 各模式點選數 / 各索引點選數
 experiment_params{} 該次使用的全部參數——沒有它任何數字都不可重現
 ```
+
+**`by_index` 是主要視角，`corpus` 只是彙總。** 不同層的規模可能相差數個數量級，
+彙總會把它們平均掉——那正是分層要避免的事。彙總刻意**只含加得起來的量**：詞彙量與
+實體數不跨索引相加，因為重疊程度未知，相加會系統性高估，而一個高估的數字比沒有數字
+更糟——它看起來跟真的一樣。
+
+**`retrieval_shape` 把三種形態分開統計。** 融合後的名次是跨層競爭的結果，分層的名次
+是層內競爭的結果。混在同一組分佈裡，得到的數字兩者都不代表，而且不會有任何跡象顯示
+它壞了。`empty_layer_rate_by_index` 是「這一層多常整個沒東西」——那是層本身的體檢。
+`fused_contributions_by_index` 回答平權 RRF 的實際效果：層的大小相差數個數量級時，
+「每類知識都派代表出席」是不是真的發生了，只有這個數字看得出來。
 
 所有分佈都是 `{n, min, p25, median, p75, max, mean}`。
 
@@ -465,20 +597,45 @@ experiment_params{} 該次使用的全部參數——沒有它任何數字都不
 
 語料統計與索引狀態。**無參數。**
 
-直接讀建索引時算好的 `CorpusStats`，不重新計算。
+直接讀建索引時算好的 `CorpusStats`，不重新計算。**依索引拆解。**
 
 ```
-bundles, concepts, avg_concept_chars, avg_figures_per_concept
-vocab_naive, vocab_protected                  兩套詞彙空間各自的詞彙量
-entities_total
-entities_from_dictionary / entities_from_regex_fallback
-entities_by_type{}                            類型 → {total, dict, regex}
+indexes[]                                     已載入的索引名稱
+by_index{}                                    索引名稱 → 該層的統計
+  description                                 這一層裝什麼（設定裡沒寫則為空字串）
+  when_to_use                                 什麼情況下該查這一層
+  bundles, concepts, avg_concept_chars, avg_figures_per_concept
+  vocab_naive, vocab_protected                兩套詞彙空間各自的詞彙量
+  entities_total
+  entities_from_dictionary / entities_from_regex_fallback
+  entities_by_type{}                          類型 → {total, dict, regex}
                                               比例見 /v1/report，只有分母可測的類型才有
-dangling_related                              懸空關聯總數
-parse_skipped, parse_warnings
-types{}                                       type → concept 數
-index_signature
+  dangling_related                            懸空關聯總數
+  parse_skipped, parse_warnings
+  types{}                                     type → concept 數
+  index_signature
+  available_modes[]                           這一層目前可用的模式
+taxonomy{}                                    covered / total / unknown_keys / by_category
+id_overlap{}                                  跨層重複的 concept_id：total 與 pairs
+indexes_without_description[]                 沒寫 description 的層
 ```
+
+**`description` 與 `when_to_use` 是 agent 唯一能知道「這層是什麼」的來源。**
+索引名稱是設定檔裡的**任意鍵**——`cases`、`sop`、`a` 都合法，而回應裡只有那個字串。
+沒有這兩句，呼叫端只能從名字猜，而 `types` 分佈幫不上忙：它是每份文件的類型
+（`case_investigation` / `meeting_minutes` / …），與「這層是什麼」是兩個正交的軸。
+
+`indexes_without_description` 列出沒寫說明的層——讓呼叫端知道自己正在猜。
+
+**`id_overlap` 非零要當成錯誤看。** 各層語料應該互斥——同一個 `concept_id` 出現在
+兩層，不是「這份文件屬於兩類知識」，而是上游重複收錄了，或 id 產生方式沒有跨語料
+唯一。它造成的問題全部是靜默的：取全文會拿到宣告順序第一層的版本、跨層融合會對
+同一份文件重複加權。系統已經把行為壓成確定的（第一層優先、融合只計一次），
+但根因要修在語料端。
+
+**先呼叫這個**來知道有哪些層、各層叫什麼名字，再決定要不要對 `/v1/search` 指定
+`index`。`available_modes` 反映該層有沒有向量——沒有時 `D`/`E` 不在其中，
+呼叫端因此拿得到「不可用」而不是一份看起來正常的錯結果。
 
 數字怎麼判讀見 [indexing.md](./indexing.md#這些數字怎麼看)。
 
@@ -507,8 +664,8 @@ index_signature
 {
   "package": "0.1.0",
   "api": "v1",
-  "index_format": 3,
-  "index": {"format_version": 3, "signature": "3c0adccf2b4b9565"}
+  "index_format": 8,
+  "indexes": {"cases": {"format_version": 8, "signature": "3c0adccf2b4b9565"}}
 }
 ```
 
@@ -517,10 +674,10 @@ index_signature
 | `package` | 套件版本 |
 | `api` | API 版本（URL 前綴） |
 | `index_format` | **本程式支援**的索引格式版本 |
-| `index.format_version` | **目前載入索引**的格式版本 |
-| `index.signature` | 索引簽章（斷詞樣式 + 欄位 + 字典指紋的雜湊） |
+| `indexes{}.format_version` | **該索引**的格式版本 |
+| `indexes{}.signature` | 索引簽章（斷詞樣式 + 欄位 + 字典指紋 + 索引名稱的雜湊） |
 
-後兩者與 `index_format` 刻意分開——兩者無對應關係，而「服務支援 v3、載入的索引是 v2」
+後兩者與 `index_format` 刻意分開——兩者無對應關係，而「服務支援 v8、載入的索引是 v7」
 正是最需要一眼看出的除錯情境。
 
-索引未載入時 `index` 為 `null`，但仍回 `200`——診斷載入失敗正是這個端點的用途之一。
+索引未載入時 `indexes` 為空物件，但仍回 `200`——診斷載入失敗正是這個端點的用途之一。

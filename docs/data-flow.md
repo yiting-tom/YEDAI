@@ -47,7 +47,11 @@ flowchart LR
 
 ## Level 1 — 階段一：離線建索引
 
-指令：`yedai index <bundles-dir> -c config.yaml`
+指令：`yedai index -c config.yaml`（全部，依 `depends_on` 拓撲順序）
+或 `yedai index -i <名稱> -c config.yaml`（只重建一層）
+
+**一次建構只處理一個具名索引**，讀入該索引宣告的 `source`，產出只屬於它的統計。
+跨索引不共用 `df`、`avg_field_len` 或實體 idf——見[分層之後，哪些東西是每層一份的](#分層之後哪些東西是每層一份的)。
 
 ```mermaid
 flowchart TB
@@ -214,9 +218,9 @@ flowchart TB
   LG --> OUT(["JSON：header 菜單<br/>不含內容"])
 ```
 
-> ⚠️ **HTTP 服務目前不載入向量庫**（`runtime.py` 建 `Searcher` 時不帶 `vectors`），
-> 所以走 API 時 `available_modes` 只有 A/B/C，`mode=D`/`E` 會失敗。
-> 稠密腿只在 CLI 可用——見下方[缺口表](#目前流程的缺口)。
+> **每層各自的稠密腿。** 向量檢索器依索引宣告的 `collection` 建立；沒宣告或該
+> collection 尚無向量時，該層的 `available_modes` 不含 D/E——呼叫端因此拿到
+> 「這個模式現在不能用」，而不是一份看起來正常的零筆結果。
 
 ### 計分
 
@@ -469,16 +473,41 @@ B-C 接近 1 代表字典不值得維護、C-E 接近 1 代表融合不值得那
 
 | 缺口 | 影響 |
 |---|---|
-| **HTTP / MCP 不載入向量庫** | `runtime.py` 建 `Searcher` 時不帶 `vectors`，所以走 API 或 MCP 時只有 A/B/C；`mode=D`/`E` 雖然通過參數驗證卻會失敗。稠密腿目前只在 CLI（`yedai search -m D`、`yedai compare`）可用 |
 | **三欄並排 Web UI** | Swagger 沒有可點的結果列表，`/feedback` 實際上收不到人的點選資料——而那是最有價值的隱性相關性標註 |
 | **MCP 的圖片工具** | agent 拿得到圖的 URL 與文字圖說，但看不到圖本身。以 YED 語料而言這個缺口不小——wafer map 與缺陷影像是證據本身 |
+| **已結案層的結構化比對** | 同格式文件的相似度該逐欄位比（module / 站點 / defect type 分佈 / 共同經過的機台），不是整篇 BM25。全文比對在這一層會退化成「格式相似度」——分數漂亮、排序穩定、幾乎沒有鑑別力，而且不會有任何跡象顯示它壞了 |
+| **root-cause 回放評估** | 目前的評估集量的是文字檢索，那是心法層的負載。已結案層真正該量的是「檢索回來的歷史案子裡，有沒有 root cause 相同的」——真值來自結案本身，不需人標 |
 | 寫入路徑（propose / amend / retire） | agent 只能讀，無法把發現回饋成新的 concept |
+| 逐頁攝入與頁型分類 | 攝入管線在上游（PPT → 逐頁 markdown）；本專案目前只吃已經是 concept 的語料 |
+| 增量索引 | 全量重建。分層已把成本關進單層，先花這筆時間紅利 |
+| 時間衰減排序 | 舊案該降權，但那是排序信號不是索引結構，混著做會分不清是誰的作用 |
 | `neighbors` 依 type 過濾 | 高連通度語料上兩跳可能回傳過多 |
 | 結果快取 | 每次 `grep` 都重讀磁碟；本規模下不構成瓶頸 |
 
 **Web UI 仍是唯一擋住資料收集的缺口**：量測迴路（五模式、重疊度、評估集、報告）
-全部就緒，但沒有工程師會在 Swagger 上手動貼 `concept_id` 送 `/feedback`。
+全部就緒，但沒有工程師會在 Swagger 上手動貼 `concept_id` 送 `/feedback`。分層之後
+這件事更值得做——心法層是量最大、品質最參差的一層，而使用信號正是它最缺的判準。
 
-**向量庫那條缺口只擋住介面，不擋住實驗**——五個模式的完整比較走 CLI 就跑得完，
-`yedai compare -f queries.local.txt` 與 `yedai evaluate` 都經過 CLI 的 searcher。
-它該補，但它不是結論的前置條件。
+**已補上**：HTTP / MCP 先前不載入向量庫，導致 `mode=D`/`E` 通過參數驗證卻必定失敗。
+分層改寫了 `runtime.py` 的載入路徑，現在每個宣告了 collection 的索引都會建立自己的
+向量檢索器；該 collection 尚無向量時 D/E 明確標為不可用，而不是回傳零筆。
+
+---
+
+## 分層之後，哪些東西是每層一份的
+
+| 每層一份 | 全域共用 |
+|---|---|
+| `Index`（含兩套 `TermSpace` 與 `EntitySpace`） | `EntityDictionary`（來源是被依賴的那一層） |
+| `df` / `avg_field_len` / 實體 idf / `n_docs` | `Tokenizer`（識別碼樣式） |
+| 索引檔、索引簽章 | BM25 參數 `k1` / `b`（可被層覆寫） |
+| qdrant collection | `rrf_k` |
+| `Searcher`、檢索設定、query 前處理 | 遙測日誌（依層標記，不分檔） |
+| `related` 圖（不跨層解析） | taxonomy 查表資源 |
+
+**關聯邊不跨索引解析。** 指向其他層 concept 的 `related` 一律記為懸空引用。跨層解析
+會讓一份索引的圖結構依賴另一份索引當時的內容，而兩者重建節奏不同——那條邊遲早指向
+一個已經不在那裡的東西。
+
+**taxonomy 不在這張表裡的任何一欄，因為它不是索引。** 它是每個 defect 一條的判斷
+方法，以鍵取回，查無條目就是查無條目。詳見 [api.md](./api.md#get-v1taxonomydefect)。

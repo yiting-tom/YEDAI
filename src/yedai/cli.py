@@ -12,8 +12,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import Config
-from .embedding import CachedEmbedder, EmbeddingError, HttpEmbeddingClient
+from .config import Config, IndexSpec
+from .embedding import EmbeddingError, build_embedder, load_dotenv
 from .entities import EntityDictionary, EntitySourceError
 from .formats import FULL, INTACT, NONE, PARTIAL, check_coverage, load_samples
 from .fulltext import ConceptFileMissing, ConceptNotFound, ConceptPathEscape, load_concept
@@ -25,7 +25,9 @@ from .evalset import (
     generate as build_evalset,
     load as load_evalset,
 )
-from .index import Index, build_index
+from .index import Index, build_index_for_spec, load_index_for_spec
+from .layers import IdOverlap, LayeredOutcome, LayeredSearcher
+from .runtime import ENV_CONFIG
 from .llm import CachedChat, HttpChatClient
 from .queries import (
     DEFAULT_MIX,
@@ -33,16 +35,18 @@ from .queries import (
     load as load_queries,
     render as render_queries,
 )
-from .search import MODES, ModeResult, ModeUnavailable, Searcher, VectorSearcher
+from .search import ModeResult, ModeUnavailable, Searcher, VectorSearcher
+from .taxonomy import Taxonomy
 from .telemetry import TelemetryStore, build_report
 from .tokenizer import Tokenizer
-from .vectors import CorpusLeakGuard, VectorStore, guard_corpus_leaves_process
+from .vectors import CorpusLeakGuard, VectorBackend, VectorStore, guard_corpus_leaves_process
 
 app = typer.Typer(add_completion=False, help="OKF bundle 關鍵字檢索 baseline harness（A/B/C 消融）")
 console = Console()
 err = Console(stderr=True)
 
 ConfigOpt = typer.Option(None, "--config", "-c", help="設定檔路徑（YAML）")
+IndexOpt = typer.Option(None, "--index", "-i", help="索引名稱；省略則涵蓋全部已宣告的索引")
 
 
 def _config(path: Optional[Path]) -> Config:
@@ -51,6 +55,25 @@ def _config(path: Optional[Path]) -> Config:
     except (FileNotFoundError, ValueError) as exc:
         err.print(f"[red]設定錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
+
+
+def _config_with_indexes(path: Optional[Path]) -> Config:
+    """啟動長時間服務前的檢查：連索引宣告都一起驗。
+
+    只驗 `Config.load` 是不夠的——空設定在 Config 層是合法的（斷詞、格式檢查
+    等路徑不需要索引）。於是服務會照常啟動、照常印出 /docs 的網址，然後每一個
+    端點都回 503。失敗要發生在啟動時，不是第一個請求時。
+
+    解析順序必須與 `Runtime.load` 一致（明確參數 > 環境變數 > 內建預設值）。
+    不一致的話，這道檢查會擋掉一個服務其實跑得起來的設定——那比不檢查更糟。
+    """
+    cfg = _config(path or os.environ.get(ENV_CONFIG) or None)
+    try:
+        cfg.index_specs()
+    except ValueError as exc:
+        err.print(f"[red]設定錯誤：[/red] {exc}")
+        raise typer.Exit(2) from exc
+    return cfg
 
 
 def _dictionary(cfg: Config) -> EntityDictionary:
@@ -63,70 +86,106 @@ def _dictionary(cfg: Config) -> EntityDictionary:
         raise typer.Exit(2) from exc
 
 
-def _load_dotenv(path: Path = Path(".env")) -> None:
-    """把 `.env` 讀進環境變數。已存在的變數不覆蓋——explicit export 應該贏過檔案。"""
-    if not path.is_file():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+def _specs(cfg: Config) -> dict[str, IndexSpec]:
+    try:
+        return cfg.index_specs()
+    except ValueError as exc:
+        err.print(f"[red]設定錯誤：[/red] {exc}")
+        raise typer.Exit(2) from exc
 
 
-def _embedder(cfg: Config) -> CachedEmbedder:
-    _load_dotenv()
-    e = cfg.embedding
-    client = HttpEmbeddingClient(
-        base_url=e["base_url"],
-        model=e["model"],
-        dim=int(e["dim"]),
-        api_key_env=e["api_key_env"],
-        batch_size=int(e.get("batch_size", 32)),
-        timeout=float(e.get("timeout", 60.0)),
-        max_retries=int(e.get("max_retries", 4)),
-    )
-    return CachedEmbedder(client, e.get("cache_dir"))
+def _spec(cfg: Config, name: str) -> IndexSpec:
+    specs = _specs(cfg)
+    if name not in specs:
+        err.print(f"[red]未宣告的索引名稱 [/red]{name!r}；可用的有 {sorted(specs)}")
+        raise typer.Exit(2)
+    return specs[name]
 
 
-def _vector_store(cfg: Config) -> VectorStore:
+def _selected(cfg: Config, name: Optional[str]) -> list[str]:
+    """要處理哪些索引。指定名稱時只有它；否則全部，並依依賴順序。"""
+    if name is not None:
+        _spec(cfg, name)
+        return [name]
+    _specs(cfg)
+    return cfg.index_build_order()
+
+
+def _backend(cfg: Config) -> VectorBackend:
+    """全部 collection 共用一個 client。
+
+    本機檔案模式的 qdrant 對儲存資料夾持有獨佔鎖：每層各開一個 client，
+    第二個有向量的層就會撞鎖，而錯誤訊息指向 qdrant、不指向設定。
+    """
     v = cfg.vector
     api_key = os.environ.get(v["api_key_env"]) if v.get("api_key_env") else None
-    return VectorStore(
-        dim=int(cfg.embedding["dim"]),
-        path=v.get("path"),
-        url=v.get("url"),
-        collection=v.get("collection", "yedai"),
-        api_key=api_key,
-    )
+    return VectorBackend(path=v.get("path"), url=v.get("url"), api_key=api_key)
 
 
-def _index(cfg: Config) -> Index:
+def _vector_store(
+    cfg: Config, spec: IndexSpec, backend: Optional[VectorBackend] = None
+) -> Optional[VectorStore]:
+    """索引沒宣告 collection 就沒有稠密腿。回 None 而不是建一個空的——
+    空向量庫會讓 D/E 回傳零筆，而那看起來像「稠密腿沒有用」。"""
+    if not spec.collection:
+        return None
+    owned = backend or _backend(cfg)
+    return owned.store(int(cfg.embedding["dim"]), spec.collection)
+
+
+def _index(cfg: Config, name: str) -> Index:
     dictionary = _dictionary(cfg)
+    spec = _spec(cfg, name)
     try:
-        idx = Index.load(cfg.index_path)
-        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
+        return load_index_for_spec(spec, cfg, dictionary)
     except (FileNotFoundError, ValueError) as exc:
         err.print(f"[red]索引錯誤：[/red] {exc}")
         raise typer.Exit(2) from exc
-    return idx
 
 
-def _searcher(cfg: Config, with_vectors: bool = False) -> Searcher:
+def _searcher(
+    cfg: Config,
+    name: str,
+    with_vectors: bool = False,
+    backend: Optional[VectorBackend] = None,
+) -> Searcher:
     dictionary = _dictionary(cfg)
-    idx = _index(cfg)
+    spec = _spec(cfg, name)
+    idx = _index(cfg, name)
 
     vectors = None
     if with_vectors:
-        store = _vector_store(cfg)
+        store = _vector_store(cfg, spec, backend)
         # 有向量才接上。沒有就讓 D/E 明確地「不可用」——這比接上一個空的向量庫
         # 然後回傳零筆結果好得多：後者看起來像「稠密腿沒有用」。
-        if store.has_vectors():
-            vectors = VectorSearcher(store, _embedder(cfg))
-        else:
-            store.close()
-    return Searcher(idx, cfg, dictionary, vectors=vectors)
+        if store is not None and store.has_vectors():
+            vectors = VectorSearcher(store, build_embedder(cfg))
+    return LayeredSearcher.searcher_for(spec, idx, cfg, dictionary, vectors)
+
+
+def _layered(cfg: Config, with_vectors: bool = False) -> LayeredSearcher:
+    """全部索引各自建立綁定的 `Searcher`，交給分層協調層。
+
+    向量 backend 只開一次並由全部層共用——見 `_backend`。
+    """
+    names = _selected(cfg, None)
+    backend = _backend(cfg) if with_vectors and any(_spec(cfg, n).collection for n in names) else None
+    searchers = {name: _searcher(cfg, name, with_vectors, backend) for name in names}
+    layered = LayeredSearcher(searchers, cfg)
+    _warn_overlap(layered)
+    return layered
+
+
+def _warn_overlap(layered: LayeredSearcher) -> None:
+    """跨層 concept_id 相撞是設定或語料的錯，而且它的症狀全部是靜默的。"""
+    overlap = layered.id_overlap
+    if not overlap:
+        return
+    err.print(
+        f"[yellow]警告：{overlap.total} 個 concept_id 同時存在於多個索引"
+        f"（{', '.join(sorted(overlap.pairs))}）。各層語料應互斥；"
+        f"重疊會讓取全文靜默取第一層、跨層融合對同一份文件重複加權。[/yellow]"
+    )
 
 
 def _render(result: ModeResult, show_legs: bool = False) -> Table:
@@ -155,22 +214,37 @@ def _render(result: ModeResult, show_legs: bool = False) -> Table:
 
 @app.command()
 def index(
-    bundles: Path = typer.Argument(..., help="bundle 根目錄"),
+    name: Optional[str] = IndexOpt,
     config: Optional[Path] = ConfigOpt,
 ) -> None:
-    """解析 OKF bundle 並建立索引快取。"""
+    """解析 OKF bundle 並建立索引快取。
+
+    省略 `-i` 時依 `depends_on` 的拓撲順序建構全部索引。順序不是裝飾：上游是
+    下游的實體字典來源，反過來建會讓下游用到舊字典，而那不會報錯。
+    """
     cfg = _config(config)
-    if not bundles.exists() or not bundles.is_dir():
-        err.print(f"[red]找不到 bundle 根目錄：[/red] {bundles}")
-        raise typer.Exit(2)
-
     dictionary = _dictionary(cfg)
-    with console.status("解析與建索引中…"):
-        idx = build_index(bundles, cfg, dictionary)
-    path = idx.save(cfg.index_path)
+    names = _selected(cfg, name)
+    specs = _specs(cfg)
 
+    for target in names:
+        spec = specs[target]
+        with console.status(f"解析與建索引中… [{target}]"):
+            try:
+                idx = build_index_for_spec(spec, cfg, dictionary)
+            except FileNotFoundError as exc:
+                err.print(f"[red]索引 {target!r}：[/red] {exc}")
+                raise typer.Exit(2) from exc
+        _print_index_stats(target, idx)
+        console.print(f"索引 [cyan]{target}[/cyan] 已寫入 [green]{spec.path}[/green]\n")
+
+    if len(names) > 1:
+        console.print(f"[dim]建構順序：{' → '.join(names)}（依 depends_on）[/dim]")
+
+
+def _print_index_stats(name: str, idx: Index) -> None:
     s = idx.stats
-    table = Table(title="語料統計", show_header=False)
+    table = Table(title=f"語料統計 — 索引 {name}", show_header=False)
     table.add_column("項目", style="bold")
     table.add_column("值", justify="right")
     table.add_row("bundles", str(s.bundles))
@@ -188,88 +262,96 @@ def index(
     console.print(table)
 
     if s.types:
-        tt = Table(title="type 分佈")
+        tt = Table(title=f"type 分佈 — 索引 {name}")
         tt.add_column("type")
         tt.add_column("concepts", justify="right")
-        for name, count in list(s.types.items())[:20]:
-            tt.add_row(name, str(count))
+        for tname, count in list(s.types.items())[:20]:
+            tt.add_row(tname, str(count))
         console.print(tt)
 
     if idx.skipped:
-        err.print(f"\n[yellow]解析失敗 {len(idx.skipped)} 檔：[/yellow]")
+        err.print(f"\n[yellow]索引 {name}：解析失敗 {len(idx.skipped)} 檔：[/yellow]")
         for line in idx.skipped[:20]:
             err.print(f"  - {line}")
         if len(idx.skipped) > 20:
             err.print(f"  … 另有 {len(idx.skipped) - 20} 筆")
     for line in idx.warnings[:20]:
-        err.print(f"[yellow]警告：[/yellow] {line}")
-
-    console.print(f"\n索引已寫入 [green]{path}[/green]")
+        err.print(f"[yellow]索引 {name} 警告：[/yellow] {line}")
 
 
 @app.command()
 def embed(
-    bundles: Path = typer.Argument(..., help="bundle 根目錄（用於判定語料是否為合成）"),
+    name: Optional[str] = IndexOpt,
     config: Optional[Path] = ConfigOpt,
     batch: int = typer.Option(64, "--batch", help="每次寫入向量庫的筆數"),
 ) -> None:
-    """為每個 concept 產生向量並寫入向量庫（模式 D / E 的前置）。"""
+    """為每個 concept 產生向量並寫入向量庫（模式 D / E 的前置）。
+
+    省略 `-i` 時對所有宣告了 collection 的索引執行。每個索引寫進自己的 collection：
+    不同層的稠密腿價值不同，分開才能分開決定要不要付這筆 embedding 成本。
+    """
     cfg = _config(config)
-    _load_dotenv()
+    load_dotenv()
     base_url = cfg.embedding["base_url"]
+    specs = _specs(cfg)
+    targets = [n for n in _selected(cfg, name) if specs[n].collection]
 
-    # 送出之前的最後一道閘。一旦送出就收不回來，所以預設是拒絕而不是警告。
-    try:
-        guard_corpus_leaves_process(
-            bundles, base_url, bool(cfg.embedding.get("trusted_endpoint", False))
+    if not targets:
+        scope = f"索引 {name!r}" if name else "任何索引"
+        err.print(f"[red]{scope} 沒有宣告 collection，沒有可寫入的向量庫。[/red]")
+        raise typer.Exit(2)
+
+    embedder = build_embedder(cfg)
+    # 全部 collection 共用一個 client；逐層各開一個會在第二層撞上本機 qdrant 的獨佔鎖。
+    backend = _backend(cfg)
+    for target in targets:
+        spec = specs[target]
+        # 送出之前的最後一道閘。一旦送出就收不回來，所以預設是拒絕而不是警告。
+        # 每個索引各自判定——一層是合成語料不代表另一層也是。
+        try:
+            guard_corpus_leaves_process(
+                spec.source, base_url, bool(cfg.embedding.get("trusted_endpoint", False))
+            )
+        except CorpusLeakGuard as exc:
+            err.print(f"[red]索引 {target!r}：{exc}[/red]")
+            raise typer.Exit(2) from exc
+
+        idx = _index(cfg, target)
+        store = _vector_store(cfg, spec, backend)
+        assert store is not None  # targets 已篩選過 collection
+        store.ensure_collection()
+
+        max_chars = int(cfg.embedding.get("max_chars", 6000))
+        texts = [_embed_text(idx, meta, max_chars) for meta in idx.docs]
+        console.print(
+            f"[cyan]{target}[/cyan]：{len(texts)} 個 concept → [cyan]{base_url}[/cyan]  "
+            f"model=[cyan]{cfg.embedding['model']}[/cyan] dim={cfg.embedding['dim']} "
+            f"collection=[cyan]{spec.collection}[/cyan]"
         )
-    except CorpusLeakGuard as exc:
-        err.print(f"[red]{exc}[/red]")
-        raise typer.Exit(2) from exc
 
-    dictionary = _dictionary(cfg)
-    try:
-        idx = Index.load(cfg.index_path)
-        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
-    except (FileNotFoundError, ValueError) as exc:
-        err.print(f"[red]索引錯誤：[/red] {exc}")
-        raise typer.Exit(2) from exc
+        written = 0
+        try:
+            with console.status(f"嵌入中… [{target}]") as status:
+                for start in range(0, len(texts), batch):
+                    chunk = texts[start : start + batch]
+                    vectors = embedder.embed(chunk)
+                    store.upsert(
+                        [
+                            (idx.docs[start + i].concept_id, vec)
+                            for i, vec in enumerate(vectors)
+                        ]
+                    )
+                    written += len(chunk)
+                    status.update(f"嵌入中… [{target}] {written}/{len(texts)}")
+        except EmbeddingError as exc:
+            backend.close()
+            err.print(f"[red]索引 {target!r} 嵌入失敗：[/red] {exc}")
+            raise typer.Exit(1) from exc
 
-    store = _vector_store(cfg)
-    store.ensure_collection()
-    embedder = _embedder(cfg)
+        console.print(f"  已寫入 [green]{written}[/green] 個向量")
 
-    max_chars = int(cfg.embedding.get("max_chars", 6000))
-    texts = [_embed_text(idx, meta, max_chars) for meta in idx.docs]
-    console.print(
-        f"{len(texts)} 個 concept → [cyan]{base_url}[/cyan]  "
-        f"model=[cyan]{cfg.embedding['model']}[/cyan] dim={cfg.embedding['dim']}"
-    )
-
-    written = 0
-    try:
-        with console.status("嵌入中…") as status:
-            for start in range(0, len(texts), batch):
-                chunk = texts[start : start + batch]
-                vectors = embedder.embed(chunk)
-                store.upsert(
-                    [
-                        (idx.docs[start + i].concept_id, vec)
-                        for i, vec in enumerate(vectors)
-                    ]
-                )
-                written += len(chunk)
-                status.update(f"嵌入中… {written}/{len(texts)}")
-    except EmbeddingError as exc:
-        err.print(f"[red]嵌入失敗：[/red] {exc}")
-        raise typer.Exit(1) from exc
-    finally:
-        store.close()
-
-    console.print(
-        f"已寫入 [green]{written}[/green] 個向量"
-        f"（快取命中 {embedder.hits}／請求 {embedder.misses}）"
-    )
+    backend.close()
+    console.print(f"[dim]快取命中 {embedder.hits}／請求 {embedder.misses}[/dim]")
 
 
 def _embed_text(idx: Index, meta, max_chars: int) -> str:
@@ -293,43 +375,100 @@ def _embed_text(idx: Index, meta, max_chars: int) -> str:
 @app.command()
 def search(
     query: str = typer.Argument(..., help="查詢字串"),
-    mode: str = typer.Option("C", "--mode", "-m", help="檢索模式：A / B / C / D / E"),
-    k: Optional[int] = typer.Option(None, "--top", "-k", help="回傳筆數"),
+    name: Optional[str] = IndexOpt,
+    mode: Optional[str] = typer.Option(None, "--mode", "-m", help="檢索模式：A / B / C / D / E；省略則用各層宣告的預設"),
+    k: Optional[int] = typer.Option(None, "--top", "-k", help="回傳筆數；省略則用各層宣告的深度"),
+    fuse: bool = typer.Option(False, "--fuse", help="額外附上跨索引 RRF 融合清單"),
     config: Optional[Path] = ConfigOpt,
     log: bool = typer.Option(True, help="是否寫入查詢日誌"),
 ) -> None:
-    """以單一模式查詢。"""
+    """查詢。省略 `-i` 時分層檢索全部索引。
+
+    分層而不是混成一份排序：RRF 融合的前提是兩份排名在回答同一個問題，跨模式
+    滿足，跨索引不滿足。`--fuse` 保留了融合，供對照，但它不是預設。
+    """
     cfg = _config(config)
-    searcher = _searcher(cfg, with_vectors=True)
+    layered = _layered(cfg, with_vectors=True)
     try:
-        result = searcher.search(query, mode, k)
+        outcome = layered.search(query, index=name, mode=mode, k=k, fuse=fuse)
     except (ValueError, ModeUnavailable) as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
 
-    console.print(_render(result, show_legs=result.mode == "C"))
+    _render_layered(outcome)
     if log:
-        from .search import SearchOutcome
-
         store = TelemetryStore.create(cfg)
-        outcome = SearchOutcome(
-            query=query,
-            k=k or cfg.top_k,
-            results={result.mode: result},
-            entities=searcher.extract_query_entities(query),
-        )
-        qid = store.log_query(outcome, requested_mode=result.mode)
+        qid = store.log_layered(outcome, requested_index=name)
         console.print(f"[dim]query_id={qid}[/dim]")
+
+
+def _render_layered(outcome: LayeredOutcome) -> None:
+    """每層一段。空層仍然印出來——層的缺席本身是訊號，省略會讓它與
+    「排在回傳筆數之外」不可區分。"""
+    for layer in outcome.layers:
+        title = f"索引 {layer.index} · 模式 {layer.mode}（候選 {layer.candidates}）"
+        if layer.prepared_query != outcome.query:
+            title += f" · 查詢經前處理 → {layer.prepared_query!r}"
+        table = Table(title=title, show_lines=False)
+        table.add_column("#", justify="right", style="dim", width=3)
+        table.add_column("score", justify="right", width=8)
+        table.add_column("concept_id", style="cyan", no_wrap=True)
+        table.add_column("type", style="magenta", no_wrap=True)
+        table.add_column("title")
+        for hit in layer.hits:
+            table.add_row(str(hit.rank), f"{hit.score:.4f}", hit.concept_id, hit.type, hit.title)
+        if layer.empty:
+            table.add_row("—", "—", "[dim]（這一層沒有命中）[/dim]", "—", "—")
+        console.print(table)
+
+    if outcome.fused is None:
+        return
+    ft = Table(title="跨索引 RRF 融合（平權）")
+    ft.add_column("#", justify="right", style="dim", width=3)
+    ft.add_column("score", justify="right", width=8)
+    ft.add_column("來源索引", style="green", no_wrap=True)
+    ft.add_column("層內名次", justify="right", width=8)
+    ft.add_column("concept_id", style="cyan", no_wrap=True)
+    ft.add_column("title")
+    for fh in outcome.fused:
+        ft.add_row(
+            str(fh.rank),
+            f"{fh.score:.4f}",
+            fh.index,
+            str(fh.source_rank),
+            fh.hit.concept_id,
+            fh.hit.title,
+        )
+    if not outcome.fused:
+        ft.add_row(*(["—"] * 6))
+    console.print(ft)
+
+
+def _single_index(cfg: Config, name: Optional[str], why: str) -> str:
+    """模式消融只在單一索引內成立——跨索引比模式是在比兩件不同的事。"""
+    if name is not None:
+        _spec(cfg, name)
+        return name
+    names = _selected(cfg, None)
+    if len(names) == 1:
+        return names[0]
+    err.print(f"[red]有 {len(names)} 個索引（{sorted(names)}），{why} 請以 -i 指定其中一個。[/red]")
+    raise typer.Exit(2)
 
 
 @app.command()
 def compare(
     query: Optional[str] = typer.Argument(None, help="查詢字串（與 --file 二擇一）"),
+    name: Optional[str] = IndexOpt,
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="每行一個查詢的檔案"),
     k: Optional[int] = typer.Option(None, "--top", "-k", help="回傳筆數"),
     config: Optional[Path] = ConfigOpt,
 ) -> None:
-    """對同一查詢並排執行 A / B / C 三模式，並顯示模式間重疊度。"""
+    """對同一查詢並排執行各可用模式，並顯示模式間重疊度。
+
+    模式比較固定在**單一索引內**進行：跨索引比模式是在比兩件不同的事，
+    重疊度會變成「這兩層語料有多像」而不是「這個干預有沒有作用」。
+    """
     cfg = _config(config)
     if not query and not file:
         err.print("[red]請提供查詢字串或 --file[/red]")
@@ -346,15 +485,17 @@ def compare(
         # 把它當成查詢會讓一整批註解文字混進統計裡。
         queries += load_queries(file)
 
-    searcher = _searcher(cfg, with_vectors=True)
+    target = _single_index(cfg, name, "模式比較只在單一索引內成立，")
+    searcher = _searcher(cfg, target, with_vectors=True)
     store = TelemetryStore.create(cfg)
+    console.print(f"[dim]索引：{target}[/dim]")
     # 寫死配對會在模式增加時靜靜漏掉新的那幾組，而漏掉的正是新機制值不值得的依據。
     agg: dict[str, list[float]] = defaultdict(list)
     single = len(queries) == 1
 
     for q in queries:
         outcome = searcher.compare(q, k)
-        store.log_query(outcome, requested_mode="compare")
+        store.log_query(outcome, requested_mode="compare", index=target)
         for ov in outcome.overlaps:
             agg[ov.pair].append(ov.jaccard)
 
@@ -366,7 +507,7 @@ def compare(
                 )
             else:
                 console.print("[dim]查詢中未偵測到實體[/dim]")
-            for mode in MODES:
+            for mode in searcher.available_modes:
                 console.print(_render(outcome.results[mode], show_legs=mode == "C"))
 
             ot = Table(title="模式間 top-k 重疊度")
@@ -406,15 +547,27 @@ def report(
 ) -> None:
     """產出去識別化統計報告（零語料內容，可安全分享）。"""
     cfg = _config(config)
-    dictionary = _dictionary(cfg)
-    try:
-        idx = Index.load(cfg.index_path)
-    except (FileNotFoundError, ValueError) as exc:
-        err.print(f"[red]索引錯誤：[/red] {exc}")
-        raise typer.Exit(2) from exc
+    specs = _specs(cfg)
+    # 語料統計依索引拆解。不同層的規模可能相差數個數量級，只給彙總會把它們平均掉。
+    indexes: dict[str, Index] = {}
+    for target in cfg.index_build_order():
+        try:
+            indexes[target] = Index.load(specs[target].path, expect_name=target)
+        except (FileNotFoundError, ValueError) as exc:
+            err.print(f"[red]索引 {target!r} 錯誤：[/red] {exc}")
+            raise typer.Exit(2) from exc
 
     evals = json.loads(evaluation.read_text(encoding="utf-8")) if evaluation else None
-    data = build_report(idx, TelemetryStore.create(cfg), cfg, evaluation=evals)
+    data = build_report(
+        indexes,
+        TelemetryStore.create(cfg),
+        cfg,
+        evaluation=evals,
+        taxonomy=Taxonomy.from_config(cfg),
+        # 與 HTTP 的 /v1/report 走同一個量法——同一份報告從兩個入口產出的數字
+        # 不一樣，比缺一個欄位更難察覺。
+        id_overlap=IdOverlap.measure(indexes).to_dict(),
+    )
     blob = json.dumps(data, ensure_ascii=False, indent=2)
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -426,27 +579,33 @@ def report(
 
 @app.command("gen-evalset")
 def gen_evalset(
-    bundles: Path = typer.Argument(..., help="bundle 根目錄（用於判定語料是否為合成）"),
+    name: Optional[str] = IndexOpt,
     n: int = typer.Option(30, "--count", "-n", help="取樣幾個 concept"),
     out: Path = typer.Option(Path("evalset.local.jsonl"), "--out", "-o", help="輸出路徑"),
     seed: int = typer.Option(7, "--seed", "-s", help="取樣種子"),
     config: Optional[Path] = ConfigOpt,
 ) -> None:
-    """讓 LLM 讀 concept 產出「查詢 + 標準答案」，解鎖 recall@k 與 MRR。"""
+    """讓 LLM 讀 concept 產出「查詢 + 標準答案」，解鎖 recall@k 與 MRR。
+
+    評估集綁定單一索引：不同層的檢索性質不同，混在一份評估集裡量出來的數字
+    無法歸因到任何一層。
+    """
     cfg = _config(config)
-    _load_dotenv()
+    load_dotenv()
     base_url = cfg.llm["base_url"]
+    target = _single_index(cfg, name, "評估集綁定單一索引，")
+    spec = _spec(cfg, target)
 
     # 與 `embed` 同一道閘。信任宣告各自獨立——embedding 可信不代表 LLM 端點可信。
     try:
         guard_corpus_leaves_process(
-            bundles, base_url, bool(cfg.llm.get("trusted_endpoint", False)), config_key="llm"
+            spec.source, base_url, bool(cfg.llm.get("trusted_endpoint", False)), config_key="llm"
         )
     except CorpusLeakGuard as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
 
-    idx = _index(cfg)
+    idx = _index(cfg, target)
     chat = CachedChat(
         HttpChatClient(
             base_url=base_url,
@@ -482,6 +641,7 @@ def gen_evalset(
 
 @app.command()
 def evaluate(
+    name: Optional[str] = IndexOpt,
     file: Path = typer.Option(Path("evalset.local.jsonl"), "--file", "-f", help="評估集路徑"),
     k: int = typer.Option(10, "--top", "-k", help="計算 recall@k / MRR 的深度"),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="輸出 JSON 路徑"),
@@ -494,7 +654,9 @@ def evaluate(
         raise typer.Exit(2)
 
     es = load_evalset(file)
-    searcher = _searcher(cfg, with_vectors=True)
+    target = _single_index(cfg, name, "評估綁定單一索引，")
+    console.print(f"[dim]索引：{target}[/dim]")
+    searcher = _searcher(cfg, target, with_vectors=True)
     with console.status(f"評估 {len(es.items)} 條查詢 × {len(searcher.available_modes)} 個模式…"):
         result = run_evaluation(es, searcher, k=k)
 
@@ -522,6 +684,7 @@ def evaluate(
 
 @app.command("gen-queries")
 def gen_queries(
+    name: Optional[str] = IndexOpt,
     n: int = typer.Option(40, "--count", "-n", help="產生幾條查詢"),
     out: Path = typer.Option(Path("queries.local.txt"), "--out", "-o", help="輸出路徑"),
     seed: int = typer.Option(7, "--seed", "-s", help="亂數種子"),
@@ -530,16 +693,13 @@ def gen_queries(
     """從真實語料取樣產生查詢清單（`mode_overlap` 的唯一前置條件）。"""
     cfg = _config(config)
     dictionary = _dictionary(cfg)
-    try:
-        idx = Index.load(cfg.index_path)
-        idx.check_signature(cfg.index_signature(dictionary.fingerprint()))
-    except (FileNotFoundError, ValueError) as exc:
-        err.print(f"[red]索引錯誤：[/red] {exc}")
-        raise typer.Exit(2) from exc
+    target = _single_index(cfg, name, "查詢取自單一索引的語料，")
+    spec = _spec(cfg, target)
+    idx = _index(cfg, target)
 
     tok = Tokenizer(cfg.identifier_specs())
     qs = generate_queries(idx, dictionary, n, tok, seed=seed, mix=DEFAULT_MIX)
-    out.write_text(render_queries(qs, seed, DEFAULT_MIX, cfg.index_path), encoding="utf-8")
+    out.write_text(render_queries(qs, seed, DEFAULT_MIX, spec.path), encoding="utf-8")
 
     table = Table(title=f"查詢組成（{len(qs.queries)} 條）")
     table.add_column("組成")
@@ -587,7 +747,8 @@ def mcp(config: Optional[Path] = ConfigOpt) -> None:
     """啟動 MCP server（stdio），供 claude-agent-sdk 等 agent 連接。"""
     from .mcp_server import main as mcp_main
 
-    _config(config)  # 提早驗證設定，錯誤才不會變成 stdio 上的雜訊
+    # 索引宣告也一起驗——錯誤才不會變成 stdio 上的雜訊，或每個工具呼叫的 503
+    _config_with_indexes(config)
     try:
         mcp_main(str(config) if config else None)
     except (FileNotFoundError, ValueError) as exc:
@@ -604,9 +765,12 @@ def serve(
     """啟動 HTTP API（互動式文件頁在 /docs）。"""
     import uvicorn
 
-    _config(config)  # 提早驗證設定
+    # 索引宣告在這裡就要驗。少了它，服務會啟動、印出 /docs 的網址，
+    # 然後每一個端點都 503——而錯誤只有在第一個請求打進來時才看得到。
+    cfg = _config_with_indexes(config)
     if config:
         os.environ["YEDAI_CONFIG"] = str(config)
+    console.print(f"索引：[cyan]{', '.join(cfg.index_build_order())}[/cyan]")
     console.print(f"互動式 API 文件： [green]http://{host}:{port}/docs[/green]")
     uvicorn.run("yedai.api:app", host=host, port=port, log_level="info")
 

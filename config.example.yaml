@@ -78,8 +78,68 @@ identifier_samples_path: identifier-samples.example.yaml
 asset_dirs:
   - _assets
 
+# --- 索引 ---
+# 具名索引集合。每個索引持有**完全獨立**的詞彙與實體統計：`df`、`avg_field_len`
+# 與實體 idf 都不跨索引共用。
+#
+# 為什麼不是一個索引加個過濾條件：混在一起時統計是全域的，持續累積的那一層每長大
+# 一次，其他層的排名就漂移一次——沒有變更、沒有測試會紅，品質卻退化了。過濾只影響
+# 誰參與排序，碰不到 idf。
+#
+# 下面示範三層查案知識。真實的 source 路徑屬敏感資訊，請寫在 config.local.yaml。
+indexes:
+  # 缺陷登錄：人寫，每個 defect 一條。同時是實體字典的來源，因此其他層依賴它。
+  library:
+    source: ./corpus/library
+    path: .index/library.pkl
+    collection: yedai-library
+    # description / when_to_use 不是註解，是執行期資料：它們會出現在 /v1/stats，
+    # 並被組進 MCP search 工具的說明。索引名稱是任意鍵，agent 只看得到那個字串——
+    # 沒有這兩句，它只能從名字猜這層是什麼。
+    description: 缺陷登錄。人寫，每個 defect 一條，是實體字典的來源。
+    when_to_use: 想知道「眼前這個東西叫什麼、它的權威定義是什麼」
+
+  # 查案心法：自由文字、量大、無固定格式。查詢是敘述性的子查詢，
+  # 識別碼在這一層是雜訊——比對一個跟問題無關的字串只會拉低結果。
+  heuristics:
+    source: ./corpus/heuristics
+    path: .index/heuristics.pkl
+    collection: yedai-heuristics
+    depends_on: [library]
+    keep_identifiers: false
+    default_mode: D
+    top_k: 5
+    description: 查案心法。人寫，量大，無固定格式。
+    when_to_use: 想知道「這類問題該從哪裡開始追」
+
+  # 已結案：固定格式、持續累積。識別碼是主訊號，所以保留。
+  cases:
+    source: ./corpus/cases
+    path: .index/cases.pkl
+    collection: yedai-cases
+    depends_on: [library]
+    keep_identifiers: true
+    default_mode: C
+    top_k: 10
+    description: 已結案的 defect report。固定格式、持續累積，識別碼是主訊號。
+    when_to_use: 想知道「這個現象以前發生過什麼、最後查到哪裡」
+
+# --- taxonomy 查表 ---
+# defect → 判斷方法。以 defect 為鍵取回，**不進任何索引**：它是每個 defect 一條的
+# 判斷方法，不是文件集合。放進倒排索引，呼叫端拿到的會是「最像的幾列」而且會很自信，
+# 而拿錯 defect 的方法去解讀影像，比沒有方法更糟。
+#
+# 內容屬 fab 專有知識，請指向 taxonomy.local.yaml（已 gitignore）。
+taxonomy_path: taxonomy.example.yaml
+
+# defect 全集（defect → category）。taxonomy 覆蓋率的**分母**。
+# 不設也能跑，但那樣只知道「整理了幾條」，不知道「還缺幾條」——而 taxonomy 是部分
+# 填充的衍生欄位，缺口才是要追的東西。沒有分母時報告的 taxonomy.total 為 null。
+#
+# 真實清單屬 fab 專有知識，請指向 defects.catalogue.local.yaml（已 gitignore）。
+defect_catalogue_path: defects.catalogue.example.yaml
+
 # --- 路徑 ---
-index_path: .index/yedai.pkl
 log_dir: logs
 
 # --- 其他 ---

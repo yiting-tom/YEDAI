@@ -87,14 +87,26 @@ vector:
 
 ```bash
 cp .env.example .env          # 填入金鑰
-uv run yedai index   ./bundles -c config.local.yaml
-uv run yedai embed   ./bundles -c config.local.yaml
+uv run yedai index   -c config.local.yaml
+uv run yedai embed   -c config.local.yaml           # 每層寫進自己的 collection
 uv run yedai search "蝕刻後圖案倒塌" -m E -c config.local.yaml
 ```
 
 查詢向量會落地快取（鍵含模型與維度），同一份 `queries.txt` 重跑不重複付費。換模型後快取自動失效——沿用舊向量會產出無聲的錯誤結果。
 
-> ⚠️ **D/E 目前只在 CLI 可用。** `yedai serve` 與 `yedai mcp` 走 `Runtime.load()`，那條路徑建 `Searcher` 時不帶向量庫，所以 HTTP 上 `mode=D`/`E` 會失敗、`compare` 只並排 A/B/C。完整的五模式比較請用 `yedai search -m E` 與 `yedai compare`。
+**每個索引一個 collection。** collection 名稱寫在該索引的宣告裡；沒宣告 `collection` 的索引就沒有稠密腿，它的 `available_modes` 不含 D/E。分開的理由跟分層一樣，另加一個：不同層的稠密腿價值不同（敘述性語料預期 D 是主力，同格式的結構化文件預期不是），分開才能分開決定要不要付這筆成本。
+
+**全部 collection 共用一個 qdrant client。** collection 在 qdrant 是查詢參數，不是 client 參數。本機檔案模式對儲存資料夾持有**獨佔鎖**——每層各開一個 client 的話，第二個有向量的層會讓整個載入直接炸掉：
+
+```
+RuntimeError: Storage folder .index/qdrant is already accessed by another instance
+```
+
+症狀是「跑過 `embed` 的層一旦超過一個，`serve` 與 `mcp` 就起不來」，而錯誤訊息指向 qdrant、不指向設定。`VectorBackend` 持有那個唯一的 client，`backend.store(dim, collection)` 取得各 collection 的操作介面。回歸測試在 `tests/test_layers_interfaces.py::test_several_layers_share_one_client_on_the_same_storage`。
+
+**跨程序併發仍然不行。** 那是本機檔案模式的固有限制：`serve` 與 `mcp` 不能同時對同一個 `vector.path` 開著。要併發就得改指 `vector.url`，起一套 qdrant 服務。
+
+HTTP 與 MCP 現在也載入向量庫——`Runtime.load()` 會為每個宣告了 collection 的索引建立向量檢索器，並在該 collection 尚無向量時把 D/E 標為不可用。
 
 ## 沒有向量時，D/E 是「不可用」而不是退化成 C
 

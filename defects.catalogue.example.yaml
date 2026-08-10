@@ -1,0 +1,17 @@
+# defect 全集範例：defect → category。
+#
+# 這是 taxonomy 覆蓋率的**分母**。沒有它，覆蓋率只能回報「整理了幾條」，
+# 而 taxonomy 是部分填充的衍生欄位——缺口才是要追的東西，看不見就追不動。
+#
+# category 只用來拆解覆蓋率統計。它是 schema 層級的分類名，會出現在去識別化
+# 報告裡；defect 名稱本身不會。
+#
+# 真實清單屬 fab 專有知識，請寫在 defects.catalogue.local.yaml（已 gitignore）。
+
+DEFECT_ALPHA: pattern
+DEFECT_BETA: particle
+DEFECT_GAMMA: pattern
+# 尚未整理 taxonomy 的 defect 也要列在這裡——不列的話它不進分母，
+# 覆蓋率會看起來比實際好。
+DEFECT_DELTA: residue
+DEFECT_EPSILON: particle

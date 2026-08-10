@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from yedai.config import Config
 from yedai.entities import EntityDictionary, EntityExtractor
@@ -16,11 +17,13 @@ from yedai.index import build_index
 from yedai.queries import DEFAULT_MIX, generate, load, render
 from yedai.tokenizer import Tokenizer
 
+from .conftest import INDEX_NAME
+
 
 @pytest.fixture
 def built(corpus: Path, config: Config):
     dictionary = EntityDictionary.load(config.dictionary_path)
-    index = build_index(corpus, config, dictionary)
+    index = build_index(corpus, config, dictionary, name=INDEX_NAME)
     tok = Tokenizer(config.identifier_specs())
     return index, dictionary, tok
 
@@ -160,11 +163,17 @@ def test_compare_file_ignores_the_header(built, tmp_path: Path, config: Config, 
     qfile = tmp_path / "q.txt"
     qfile.write_text(render(qs, 1, DEFAULT_MIX, "x"), encoding="utf-8")
 
-    index.save(config.index_path)
+    spec = config.index_spec(INDEX_NAME)
+    index.save(spec.path)
     cfgfile = tmp_path / "c.yaml"
     cfgfile.write_text(
-        f"index_path: {config.index_path}\ndictionary_path: {config.dictionary_path}\n"
-        f"log_dir: {config.log_dir}\n",
+        yaml.safe_dump(
+            {
+                "indexes": {INDEX_NAME: {"source": spec.source, "path": spec.path}},
+                "dictionary_path": config.dictionary_path,
+                "log_dir": config.log_dir,
+            }
+        ),
         encoding="utf-8",
     )
     result = CliRunner().invoke(app, ["compare", "-f", str(qfile), "-c", str(cfgfile)])

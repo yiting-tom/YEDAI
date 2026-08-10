@@ -138,12 +138,21 @@ def rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
 
 
 class Searcher:
+    """綁定**單一**索引的檢索器。
+
+    所有計分只使用 `index` 這一份統計。跨索引的協調由 `layers.LayeredSearcher`
+    負責——把多份索引的文件合進同一個檢索器，等於把它們的 `df` 也合了，
+    而那正是分層要避免的事。
+    """
+
     def __init__(
         self,
         index: Index,
         config: Config,
         dictionary: EntityDictionary | None = None,
         vectors: "VectorSearcher | None" = None,
+        *,
+        keep_identifiers: bool = True,
     ) -> None:
         self.index = index
         self.config = config
@@ -153,8 +162,13 @@ class Searcher:
         )
         self.extractor = EntityExtractor(self.dictionary, self.tokenizer)
         self.vectors = vectors
+        self.keep_identifiers = keep_identifiers
         self._rng = random.Random(config.seed)
         self._by_id = {meta.concept_id: i for i, meta in enumerate(index.docs)}
+
+    @property
+    def name(self) -> str:
+        return self.index.name
 
     @property
     def available_modes(self) -> tuple[str, ...]:
@@ -165,8 +179,29 @@ class Searcher:
 
     # ------------------------------------------------------------------
 
+    def prepare_query(self, query: str) -> str:
+        """把查詢轉成**這一層**該看到的形式。
+
+        識別碼在案件層是主訊號，在敘述性語料是雜訊：帶著機台編號去查「這類問題
+        怎麼追」，比對到的是一個跟問題無關的字串。差異發生在計分之前，這也是為什麼
+        分層不能退化成「同一個檢索器加個過濾條件」。
+        """
+        if self.keep_identifiers:
+            return query
+        spans = self.tokenizer.find_identifier_spans(query)
+        if not spans:
+            return query
+        out: list[str] = []
+        cursor = 0
+        for start, end in spans:
+            out.append(query[cursor:start])
+            cursor = end
+        out.append(query[cursor:])
+        # 以空白接合而非直接刪除：`XTR-05粒子` 移除識別碼後不該黏成一個新詞。
+        return " ".join(part for part in out if part.strip())
+
     def extract_query_entities(self, query: str) -> list[EntityHit]:
-        return self.extractor.extract(query)
+        return self.extractor.extract(self.prepare_query(query))
 
     def search(self, query: str, mode: str = "C", k: int | None = None) -> ModeResult:
         mode = mode.upper()
@@ -183,15 +218,19 @@ class Searcher:
         if k <= 0:
             raise ValueError("k must be > 0")
 
+        # 前處理只做一次，之後一路傳下去——各私有方法各自再處理一遍，
+        # 遲早會有一條路徑漏掉，而症狀是「這一層的結果偶爾夾帶識別碼比對」。
+        prepared = self.prepare_query(query)
+
         if mode == "A":
-            return self._lexical_only(query, mode, k, naive=True)
+            return self._lexical_only(prepared, mode, k, naive=True)
         if mode == "B":
-            return self._lexical_only(query, mode, k, naive=False)
+            return self._lexical_only(prepared, mode, k, naive=False)
         if mode == "C":
-            return self._hybrid(query, k)
+            return self._hybrid(prepared, k)
         if mode == "D":
-            return self._dense(query, k)
-        return self._rrf(query, k)
+            return self._dense(prepared, k)
+        return self._rrf(prepared, k)
 
     def compare(self, query: str, k: int | None = None) -> SearchOutcome:
         k = k or self.config.top_k
@@ -238,8 +277,9 @@ class Searcher:
         return ModeResult(mode=mode, hits=hits, candidates=len(scores))
 
     def _hybrid(self, query: str, k: int) -> ModeResult:
+        """`query` 已經過 `prepare_query`——不要在這裡再處理一次。"""
         cfg = self.config
-        entities = self.extract_query_entities(query)
+        entities = self.extractor.extract(query)
         keys = [h.key for h in entities]
 
         candidates: set[int] | None = None

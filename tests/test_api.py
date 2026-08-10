@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .conftest import INDEX_NAME
+
 import pytest
 
 
@@ -11,31 +13,69 @@ def test_healthz(client) -> None:
 
 def test_stats(client) -> None:
     body = client.get("/v1/stats").json()
-    assert body["concepts"] > 0
-    assert body["vocab_protected"] > 0
-    assert body["entities_total"] > 0
+    assert body["indexes"] == [INDEX_NAME]
+    layer = body["by_index"][INDEX_NAME]
+    assert layer["concepts"] > 0
+    assert layer["vocab_protected"] > 0
+    assert layer["entities_total"] > 0
 
 
-def test_search_single_mode(client) -> None:
+def test_search_is_layered(client) -> None:
     r = client.get("/v1/search", params={"q": "XTR-05 PARTICLE", "mode": "B", "k": 5})
     assert r.status_code == 200
     body = r.json()
     assert body["query_id"]
-    assert list(body["results"]) == ["B"]
-    assert body["results"]["B"]["hits"]
+    assert body["shape"] == "layered"
+    assert [lr["index"] for lr in body["layers"]] == [INDEX_NAME]
+    assert body["layers"][0]["mode"] == "B"
+    assert body["layers"][0]["hits"]
+    # 預設不融合。空清單與「沒要求融合」必須可區分，所以是 null 不是 []
+    assert body["fused"] is None
 
 
-def test_search_compare_mode(client) -> None:
-    body = client.get("/v1/search", params={"q": "XTR-05 PARTICLE", "mode": "compare", "k": 5}).json()
+def test_search_keeps_empty_layers(client) -> None:
+    """層的缺席本身是訊號——省略它會讓它與「排在 k 之外」不可區分。"""
+    body = client.get("/v1/search", params={"q": "完全不存在zzzz", "mode": "C"}).json()
+    assert [lr["index"] for lr in body["layers"]] == [INDEX_NAME]
+    assert body["layers"][0]["hits"] == []
+
+
+def test_search_unknown_index_is_422(client) -> None:
+    r = client.get("/v1/search", params={"q": "x", "index": "nope"})
+    assert r.status_code == 422
+    assert INDEX_NAME in r.json()["detail"]
+
+
+def test_search_fuse_keeps_source_and_rank(client) -> None:
+    body = client.get(
+        "/v1/search", params={"q": "PARTICLE", "mode": "C", "k": 5, "fuse": "true"}
+    ).json()
+    assert body["shape"] == "fused"
+    assert body["layers"], "融合時分層結構仍須保留，否則看不出某層是否整個沒東西"
+    for fh in body["fused"]:
+        assert fh["index"] == INDEX_NAME
+        assert fh["source_rank"] >= 1
+
+
+def test_compare_endpoint(client) -> None:
+    body = client.get("/v1/compare", params={"q": "XTR-05 PARTICLE", "k": 5}).json()
+    assert body["index"] == INDEX_NAME
     assert set(body["results"]) == {"A", "B", "C"}
     assert {o["pair"] for o in body["overlaps"]} == {"A-B", "A-C", "B-C"}
     assert sorted(body["display_order"]) == ["A", "B", "C"]
 
 
-def test_search_reports_entities(client) -> None:
-    body = client.get("/v1/search", params={"q": "XTR-05 PARTICLE", "mode": "C"}).json()
+def test_compare_reports_entities(client) -> None:
+    body = client.get("/v1/compare", params={"q": "XTR-05 PARTICLE"}).json()
     canonicals = {e["canonical"] for e in body["entities"]}
     assert {"XTR-05", "PARTICLE"} <= canonicals
+
+
+def test_taxonomy_unknown_defect_is_404(client) -> None:
+    """查無條目回 404，而且不夾帶任何其他 defect 的條目。"""
+    r = client.get("/v1/taxonomy/DEFECT_NOPE")
+    assert r.status_code == 404
+    assert "DEFECT_NOPE" in r.json()["detail"]
 
 
 def test_search_missing_query_is_422(client) -> None:
@@ -52,7 +92,7 @@ def test_search_invalid_k_is_422(client) -> None:
 
 def test_feedback_roundtrip(client) -> None:
     search = client.get("/v1/search", params={"q": "PARTICLE", "mode": "C", "k": 5}).json()
-    hit = search["results"]["C"]["hits"][0]
+    hit = search["layers"][0]["hits"][0]
     r = client.post(
         "/v1/feedback",
         json={
@@ -65,6 +105,8 @@ def test_feedback_roundtrip(client) -> None:
     )
     assert r.status_code == 200
     assert r.json()["status"] == "recorded"
+    # 省略 index 時由 concept_id 推定——要前端記住來源層只會讓回饋更難收集
+    assert r.json()["index"] == INDEX_NAME
 
 
 def test_feedback_unknown_query_id_is_404(client) -> None:
@@ -86,7 +128,7 @@ def test_report_endpoint_has_no_corpus_content(client) -> None:
 
 def test_concept_fulltext_roundtrip(client) -> None:
     search = client.get("/v1/search", params={"q": "PARTICLE", "mode": "B", "k": 5}).json()
-    hit = search["results"]["B"]["hits"][0]
+    hit = search["layers"][0]["hits"][0]
 
     r = client.get(f"/v1/concept/{hit['concept_id']}")
     assert r.status_code == 200
@@ -111,7 +153,7 @@ def test_concept_unknown_id_is_404(client) -> None:
 def test_concept_missing_file_is_410(client, corpus, config) -> None:
     from yedai import api
 
-    meta = api.state.index.doc_of("cpt_rare")
+    meta = api.state.indexes[INDEX_NAME].doc_of("cpt_rare")
     (corpus / "b1" / meta.path).unlink()
 
     r = client.get("/v1/concept/cpt_rare")
@@ -211,7 +253,7 @@ def test_grep_invalid_regex_is_422(client) -> None:
 def test_grep_scope_from_search_results(client) -> None:
     """agent 的實際用法：先 search 縮範圍，再拿 bundle_id 去 grep。"""
     search = client.get("/v1/search", params={"q": "PARTICLE", "mode": "C", "k": 3}).json()
-    bundle_id = search["results"]["C"]["hits"][0]["bundle_id"]
+    bundle_id = search["layers"][0]["hits"][0]["bundle_id"]
     r = client.get("/v1/grep", params={"pattern": "PARTICLE", "bundle_id": bundle_id})
     assert r.status_code == 200
     assert r.json()["results"]
@@ -289,8 +331,8 @@ def test_version_endpoint(client) -> None:
     # 「支援的索引格式」與「已載入索引的格式」必須是兩個獨立欄位——
     # 「支援 v3、載入的是 v2」正是最需要一眼看出的除錯情境
     assert body["index_format"] == INDEX_FORMAT_VERSION
-    assert body["index"]["format_version"] == INDEX_FORMAT_VERSION
-    assert body["index"]["signature"]
+    assert body["indexes"][INDEX_NAME]["format_version"] == INDEX_FORMAT_VERSION
+    assert body["indexes"][INDEX_NAME]["signature"]
 
 
 def test_version_works_without_index(monkeypatch, tmp_path) -> None:
@@ -299,18 +341,20 @@ def test_version_works_without_index(monkeypatch, tmp_path) -> None:
 
     from yedai import api
 
-    monkeypatch.setenv("YEDAI_INDEX", str(tmp_path / "does-not-exist.pkl"))
-    monkeypatch.delenv("YEDAI_CONFIG", raising=False)
+    # 未宣告任何索引：載入必定失敗，而 /version 仍須回應
+    cfg_path = tmp_path / "empty.yaml"
+    cfg_path.write_text("log_dir: logs\n", encoding="utf-8")
+    monkeypatch.setenv("YEDAI_CONFIG", str(cfg_path))
     with TestClient(api.app) as c:
         assert c.get("/healthz").json()["index_loaded"] is False
         body = c.get("/version").json()
         assert body["package"] and body["api"]
-        assert body["index"] is None
+        assert body["indexes"] == {}
 
 
 @pytest.mark.parametrize(
     "legacy",
-    ["/search", "/stats", "/report", "/grep", "/concepts", "/concept/cpt_title-hit"],
+    ["/search", "/stats", "/report", "/grep", "/concepts", "/concept/cpt_title-hit", "/compare"],
 )
 def test_unversioned_paths_are_gone(client, legacy: str) -> None:
     assert client.get(legacy).status_code == 404
@@ -375,3 +419,34 @@ def test_docs_page_served(client) -> None:
     r = client.get("/docs")
     assert r.status_code == 200
     assert "swagger" in r.text.lower()
+
+
+def test_concept_with_boolean_frontmatter_fields_serialises(client, corpus, config) -> None:
+    """`generated: true` 這種布林 frontmatter 必須通過回應驗證。
+
+    這條是端對端跑出來的迴歸點：`ConceptOut.generated` 曾誤宣告為 `str`，而
+    `Concept.generated` 是 `bool | None`——於是任何帶 `generated: true` 的 concept
+    在 `/v1/concept` 與 `/v1/concepts` 上都回 500。單元測試看不到，因為
+    `conftest.write_concept` 從不寫這個欄位；而 `gen-synthetic` 產出的語料**每一篇都有**。
+    """
+    from .conftest import write_concept
+
+    write_concept(
+        corpus / "b1" / "okf",
+        "boolflag",
+        frontmatter={"id": "cpt_boolflag", "title": "布林旗標", "generated": True},
+    )
+    from yedai import api
+    from yedai.entities import EntityDictionary
+    from yedai.index import build_index
+
+    idx = build_index(corpus, config, EntityDictionary.load(config.dictionary_path), name=INDEX_NAME)
+    api.state.runtime.layered.searchers[INDEX_NAME].index = idx
+
+    r = client.get("/v1/concept/cpt_boolflag")
+    assert r.status_code == 200, r.text
+    assert r.json()["generated"] is True
+
+    rb = client.post("/v1/concepts", json={"concept_ids": ["cpt_boolflag"]})
+    assert rb.status_code == 200, rb.text
+    assert rb.json()["concepts"][0]["generated"] is True

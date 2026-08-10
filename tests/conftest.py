@@ -150,11 +150,25 @@ def dictionary_path(tmp_path: Path) -> Path:
     return path
 
 
+#: 測試語料只有一層。名稱固定在這裡，讓「哪一層」在測試裡是明寫的而不是猜的。
+INDEX_NAME = "main"
+
+
+def index_decl(source: Path, path: Path, **overrides) -> dict:
+    """單層索引宣告。多層的測試自己組，不要從這裡改預設值。"""
+    return {INDEX_NAME: {"source": str(source), "path": str(path), **overrides}}
+
+
 @pytest.fixture
-def config(tmp_path: Path, dictionary_path: Path) -> Config:
+def index_path(tmp_path: Path) -> Path:
+    return tmp_path / ".index" / "test.pkl"
+
+
+@pytest.fixture
+def config(tmp_path: Path, dictionary_path: Path, index_path: Path) -> Config:
     return Config(
         dictionary_path=str(dictionary_path),
-        index_path=str(tmp_path / ".index" / "test.pkl"),
+        indexes=index_decl(tmp_path / "bundles", index_path),
         log_dir=str(tmp_path / "logs"),
         seed=1,
     )
@@ -163,26 +177,26 @@ def config(tmp_path: Path, dictionary_path: Path) -> Config:
 @pytest.fixture
 def searcher(corpus: Path, config: Config) -> Searcher:
     dictionary = EntityDictionary.load(config.dictionary_path)
-    index = build_index(corpus, config, dictionary)
+    index = build_index(corpus, config, dictionary, name=INDEX_NAME)
     return Searcher(index, config, dictionary)
 
 
 @pytest.fixture
-def client(corpus: Path, config, dictionary_path: Path, tmp_path: Path, monkeypatch):
+def client(corpus: Path, config, dictionary_path: Path, index_path: Path, tmp_path: Path, monkeypatch):
     """TestClient，索引已建好並透過環境變數指向它。HTTP 相關測試共用。"""
     from fastapi.testclient import TestClient
 
     from yedai import api
 
     dictionary = EntityDictionary.load(config.dictionary_path)
-    build_index(corpus, config, dictionary).save(config.index_path)
+    build_index(corpus, config, dictionary, name=INDEX_NAME).save(index_path)
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
         yaml.safe_dump(
             {
                 "dictionary_path": str(dictionary_path),
-                "index_path": str(config.index_path),
+                "indexes": index_decl(corpus, index_path),
                 "log_dir": str(config.log_dir),
                 "seed": 1,
             }
@@ -190,7 +204,6 @@ def client(corpus: Path, config, dictionary_path: Path, tmp_path: Path, monkeypa
         encoding="utf-8",
     )
     monkeypatch.setenv("YEDAI_CONFIG", str(cfg_path))
-    monkeypatch.delenv("YEDAI_INDEX", raising=False)
 
     with TestClient(api.app) as c:
         yield c

@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import FIELDS, Config
+from .config import DEFAULT_INDEX_NAME, FIELDS, Config, IndexSpec
 from .entities import UNKNOWN_TYPE, EntityDictionary, EntityExtractor, EntityHit
 from .models import Concept
 from .parser import load_bundles
@@ -28,7 +28,10 @@ from .tokenizer import Tokenizer
 #: 7：regex fallback 的實體帶「形狀決定的類型」，實體鍵因此改變
 #:    （`unknown:TSK04#PM3` → `chamber_id:TSK04#PM3`）。查詢端與文件端同步改變，
 #:    比對結果不變；改的是覆蓋率統計看不看得見缺口。
-INDEX_FORMAT_VERSION = 7
+#: 8：索引攜帶所屬的具名索引，且該名稱進入簽章。語料改為分層，每層的 `df` /
+#:    `avg_field_len` / 實體 idf 完全獨立——舊索引的統計是跨層混算的，數值本身
+#:    仍可讀，但它回答的是一個已經不存在的問題，沿用只會得到看似正常的錯分數。
+INDEX_FORMAT_VERSION = 8
 N_FIELDS = len(FIELDS)
 
 
@@ -236,6 +239,9 @@ class CorpusStats:
 @dataclass
 class Index:
     signature: str
+    #: 這份統計屬於哪一個具名索引。索引檔被放到另一個索引的路徑下時，載入端據此
+    #: 報錯而不是靜默採用——兩份統計互換之後檢索仍會回傳結果，只是分數全錯。
+    name: str = DEFAULT_INDEX_NAME
     docs: list[DocMeta] = field(default_factory=list)
     naive: TermSpace = field(default_factory=TermSpace)
     protected: TermSpace = field(default_factory=TermSpace)
@@ -276,35 +282,59 @@ class Index:
         return p
 
     @staticmethod
-    def load(path: str | Path) -> Index:
+    def load(path: str | Path, expect_name: str | None = None) -> Index:
         p = Path(path)
         if not p.exists():
-            raise FileNotFoundError(f"index not found: {p} — 請先執行 `yedai index <bundles-dir>`")
+            hint = f"`yedai index -i {expect_name}`" if expect_name else "`yedai index`"
+            raise FileNotFoundError(f"index not found: {p} — 請先執行 {hint}")
         with p.open("rb") as fh:
             idx = pickle.load(fh)
         if not isinstance(idx, Index) or idx.format_version != INDEX_FORMAT_VERSION:
             raise ValueError(f"index format mismatch at {p} — 請重建索引")
+        if expect_name is not None and idx.name != expect_name:
+            raise ValueError(
+                f"{p} 的索引名稱是 {idx.name!r}，但設定在這個路徑宣告的是 {expect_name!r}。\n"
+                f"兩份統計互換之後檢索仍會回傳結果，只是分數全錯——"
+                f"請確認 indexes[{expect_name!r}].path，並以 --rebuild 重建。"
+            )
         return idx
 
-    def check_signature(self, expected: str) -> None:
-        if self.signature != expected:
-            raise ValueError(
-                "索引快取與目前設定不相容（斷詞樣式或字典已變更）——請以 --rebuild 重建索引"
-            )
+    def check_signature(self, expected: str, dependents_hint: list[str] | None = None) -> None:
+        if self.signature == expected:
+            return
+        msg = (
+            f"索引 {self.name!r} 的快取與目前設定不相容"
+            f"（斷詞樣式或字典已變更）——請以 `yedai index -i {self.name} --rebuild` 重建"
+        )
+        # 上游是實體字典來源時，只重建這一個仍會不一致。指名該重建哪些，
+        # 否則使用者會反覆重建同一個並困惑於它為什麼還是紅的。
+        if dependents_hint:
+            msg += f"；依賴它的索引也需一併重建：{', '.join(dependents_hint)}"
+        raise ValueError(msg)
 
 
 def build_index(
     root: str | Path,
     config: Config,
     dictionary: EntityDictionary | None = None,
+    *,
+    name: str = DEFAULT_INDEX_NAME,
 ) -> Index:
+    """建立**一個**具名索引。
+
+    一次建構只讀入一個索引宣告的語料，產出的統計只屬於它。跨索引不共用 `df`、
+    `avg_field_len` 或實體 idf——這是分層存在的理由，不是實作細節。
+    """
     dictionary = dictionary if dictionary is not None else EntityDictionary.from_config(config)
     tokenizer = Tokenizer(config.identifier_specs())
     extractor = EntityExtractor(dictionary, tokenizer)
     entity_weights = config.entity_weight_vector()
 
     bundles, report = load_bundles(root)
-    index = Index(signature=config.index_signature(dictionary.fingerprint()))
+    index = Index(
+        signature=config.index_signature(dictionary.fingerprint(), name),
+        name=name,
+    )
     index.skipped = list(report.skipped)
     index.warnings = list(report.warnings)
 
@@ -371,11 +401,61 @@ def build_index(
     return index
 
 
+def build_index_for_spec(
+    spec: IndexSpec,
+    config: Config,
+    dictionary: EntityDictionary | None = None,
+) -> Index:
+    """依索引宣告建構，並寫入該宣告的路徑。"""
+    root = Path(spec.source)
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"索引 {spec.name!r} 的語料來源不存在：{root}（indexes[{spec.name!r}].source）"
+        )
+    index = build_index(root, config, dictionary, name=spec.name)
+    index.save(spec.path)
+    return index
+
+
+def build_all_indexes(
+    config: Config,
+    dictionary: EntityDictionary | None = None,
+) -> dict[str, Index]:
+    """依 `depends_on` 的拓撲順序建構全部索引。
+
+    順序不是裝飾：上游是下游的實體字典來源，反過來建會讓下游用到舊字典，
+    而那不會報錯——只會讓下游的實體腿對不上。
+    """
+    specs = config.index_specs()
+    built: dict[str, Index] = {}
+    for name in config.index_build_order():
+        built[name] = build_index_for_spec(specs[name], config, dictionary)
+    return built
+
+
+def load_index_for_spec(
+    spec: IndexSpec,
+    config: Config,
+    dictionary: EntityDictionary,
+) -> Index:
+    """載入單一具名索引，並驗證名稱與簽章。"""
+    index = Index.load(spec.path, expect_name=spec.name)
+    index.check_signature(
+        config.index_signature(dictionary.fingerprint(), spec.name),
+        dependents_hint=config.dependents_of(spec.name),
+    )
+    return index
+
+
 def _build_related_edges(index: Index, raw_related: dict[str, list[str]]) -> int:
     """把 frontmatter 的 related 拆成「可解析的邊」與「懸空引用」。
 
     必須等全部 concept 都掃過才能判定懸空——否則前向引用會被誤判。
     入向邊在這裡一次算完，查詢時就不必遍歷全部文件。
+
+    解析範圍嚴格限於**同一個索引**：指向其他索引中 concept 的 `related` 一律記為
+    懸空引用。跨索引解析會讓一份索引的圖結構依賴另一份索引當時的內容，
+    兩者重建節奏不同，那條邊遲早指向一個已經不在那裡的東西。
     """
     dangling_total = 0
     for source, targets in raw_related.items():

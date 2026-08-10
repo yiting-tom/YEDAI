@@ -9,23 +9,36 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from yedai.entities import EntityDictionary
 from yedai.index import build_index
+from yedai.layers import LayeredSearcher
 from yedai.mcp_server import _dispatch, _tools, build_server
 from yedai.runtime import Runtime
-from yedai.search import Searcher
+from yedai.taxonomy import Taxonomy
 from yedai.telemetry import TelemetryStore
 
-EXPECTED_TOOLS = {"search", "get_concept", "get_concepts", "neighbors", "grep", "stats"}
+from .conftest import INDEX_NAME
+
+EXPECTED_TOOLS = {
+    "search",
+    "get_concept",
+    "get_concepts",
+    "neighbors",
+    "grep",
+    "taxonomy",
+    "stats",
+}
 
 
 @pytest.fixture
 def runtime(corpus: Path, config) -> Runtime:
     dictionary = EntityDictionary.load(config.dictionary_path)
-    index = build_index(corpus, config, dictionary)
+    spec = config.index_spec(INDEX_NAME)
+    index = build_index(corpus, config, dictionary, name=INDEX_NAME)
+    searcher = LayeredSearcher.searcher_for(spec, index, config, dictionary)
     return Runtime(
         config=config,
         dictionary=dictionary,
-        index=index,
-        searcher=Searcher(index, config, dictionary),
+        layered=LayeredSearcher({INDEX_NAME: searcher}, config),
+        taxonomy=Taxonomy.load(None),
         store=TelemetryStore.create(config),
     )
 
@@ -59,13 +72,23 @@ def test_grep_description_requires_scope() -> None:
 # --- dispatch -----------------------------------------------------------
 
 
-def test_dispatch_search_returns_menu(runtime) -> None:
+def test_dispatch_search_returns_layered_menu(runtime) -> None:
     out = _dispatch(runtime, "search", {"query": "XTR-05 PARTICLE", "mode": "C", "k": 5})
-    assert out["hits"]
     assert out["query_id"]
     assert "note" in out
+    assert out["shape"] == "layered"
+    layer = out["layers"][0]
+    assert layer["index"] == INDEX_NAME
+    assert layer["hits"]
     # 菜單不含全文
-    assert all("raw" not in h for h in out["hits"])
+    assert all("raw" not in h for h in layer["hits"])
+
+
+def test_dispatch_search_keeps_empty_layers(runtime) -> None:
+    """空層要留在輸出裡：層的缺席本身是訊號，省略會讓它與「排在 k 之外」不可區分。"""
+    out = _dispatch(runtime, "search", {"query": "完全不存在的字串zzzz", "mode": "C"})
+    assert [lr["index"] for lr in out["layers"]] == [INDEX_NAME]
+    assert out["layers"][0]["hits"] == []
 
 
 def test_dispatch_get_concept(runtime) -> None:
@@ -84,9 +107,19 @@ def test_dispatch_get_concepts_rejects_oversize(runtime) -> None:
         _dispatch(runtime, "get_concepts", {"concept_ids": ["cpt_x"] * 200})
 
 
-def test_dispatch_neighbors(runtime, graph_index) -> None:
+def test_dispatch_neighbors(runtime, graph_index, config) -> None:
+    from yedai.layers import LayeredSearcher
+
+    spec = config.index_spec(INDEX_NAME)
     rt = runtime
-    rt.index = graph_index
+    rt.layered = LayeredSearcher(
+        {
+            INDEX_NAME: LayeredSearcher.searcher_for(
+                spec, graph_index, config, rt.dictionary
+            )
+        },
+        config,
+    )
     out = _dispatch(rt, "neighbors", {"concept_id": "cpt_a", "depth": 1, "direction": "out"})
     assert {n["concept_id"] for n in out["neighbors"]} == {"cpt_b", "cpt_c"}
 
@@ -98,8 +131,19 @@ def test_dispatch_grep(runtime) -> None:
 
 def test_dispatch_stats(runtime) -> None:
     out = _dispatch(runtime, "stats", {})
-    assert out["concepts"] > 0
-    assert "dangling_related" in out
+    assert out["indexes"] == [INDEX_NAME]
+    layer = out["by_index"][INDEX_NAME]
+    assert layer["concepts"] > 0
+    assert "dangling_related" in layer
+    # agent 要先知道有哪些層、各層可用哪些模式，才決定要不要指定 index
+    assert layer["available_modes"]
+
+
+def test_dispatch_taxonomy_missing_entry_says_so(runtime) -> None:
+    """查無條目不給最接近的一筆——錯的判斷方法看起來跟對的一樣有條理。"""
+    out = _dispatch(runtime, "taxonomy", {"defect": "DEFECT_NOPE"})
+    assert out["error"] == "no_entry"
+    assert out["defect"] == "DEFECT_NOPE"
 
 
 def test_dispatch_unknown_tool(runtime) -> None:
@@ -127,8 +171,9 @@ def test_protocol_list_tools(runtime) -> None:
 def test_protocol_call_search(runtime) -> None:
     result = _run(lambda s: s.call_tool("search", {"query": "PARTICLE", "mode": "B", "k": 3}), runtime)
     payload = json.loads(result.content[0].text)
-    assert payload["hits"]
-    assert payload["mode"] == "B"
+    layer = payload["layers"][0]
+    assert layer["hits"]
+    assert layer["mode"] == "B"
 
 
 def test_protocol_call_get_concept(runtime) -> None:
@@ -159,5 +204,7 @@ def test_protocol_matches_http_ordering(runtime) -> None:
         .content[0]
         .text
     )
-    direct = runtime.searcher.search("PARTICLE", mode="C", k=5)
-    assert [h["concept_id"] for h in via_mcp["hits"]] == [h.concept_id for h in direct.hits]
+    direct = runtime.searcher(INDEX_NAME).search("PARTICLE", mode="C", k=5)
+    assert [h["concept_id"] for h in via_mcp["layers"][0]["hits"]] == [
+        h.concept_id for h in direct.hits
+    ]

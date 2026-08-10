@@ -18,6 +18,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    "pytest-playwright>=0.8.0",
 ]
 
 [build-system]
@@ -29,3 +30,9 @@ packages = ["src/yedai"]
 
 [project.scripts]
 yedai = "yedai.cli:app"
+
+[tool.pytest.ini_options]
+# 瀏覽器 e2e 另外標記：它會起真的服務、開真的瀏覽器，比其餘測試慢一個數量級。
+# 預設仍然會跑——標記的用途是 `-m "not e2e"` 快速迴圈，不是把它排除在外。
+# 排除在外的測試等於不存在。
+markers = ["e2e: 需要瀏覽器與真實 HTTP 服務的端對端測試"]

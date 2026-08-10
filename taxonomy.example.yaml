@@ -1,0 +1,41 @@
+# taxonomy 範例：defect → 判斷方法。
+#
+# 這份資源**不進任何索引**。存取方式是「以 defect 為鍵取回那一條」，不是檢索。
+# 查無條目一律回傳「無此條目」，不做近似比對——拿另一個 defect 的判斷方法去解讀
+# 影像，比沒有方法更糟，因為錯的方法看起來跟對的一樣有條理。
+#
+# 條目內容是**方法，不是答案**：它告訴模型怎麼從影像推出候選 module，而不是直接
+# 給出 module 清單。因此它的正確性無法靜態檢查，只能用歷史結案回放來驗證
+# （拿已結案的前半跑一遍，看產出的候選有沒有命中結案裡確認的 module）。
+#
+# 真實內容屬 fab 專有知識，不得進公開 repo——請寫在 taxonomy.local.yaml。
+# 下面的 defect 名稱與 module 名稱全部是編造的佔位符。
+#
+# 可用的鍵：description / method / modules / category / notes（其餘一律報錯）
+
+DEFECT_ALPHA:
+  category: pattern
+  description: >
+    這一格寫「這個 defect 在影像上長什麼樣」。給看圖的模型當判斷依據，
+    所以要寫得出可觀察的特徵，而不是寫成分類學定義。
+  method: >
+    這一格寫「怎麼從影像推出候選 module」。寫成判準與排除法，不要寫成結論——
+    寫成結論會讓模型跳過觀察直接抄答案，而那正好是要避免的。
+    偏向多給候選：漏掉真正的 module 會讓查案走錯方向，多一兩個只是多查一點。
+  notes: 只在方法本身有例外或前提時才寫。
+
+DEFECT_BETA:
+  category: particle
+  description: 另一種形貌的描述。
+  method: 對應的判斷方法。
+  # modules 是選填的候選提示。多數條目只給方法不給清單——
+  # 一旦寫死清單，模型就不再看圖了。
+  modules:
+    - MODULE_ONE
+    - MODULE_TWO
+
+# 沒有 method 的條目是合法的：它表示「這個 defect 已登錄但方法還沒整理」，
+# 而覆蓋率統計要看得見這件事。
+DEFECT_GAMMA:
+  category: pattern
+  description: 只有描述、尚未整理判斷方法。

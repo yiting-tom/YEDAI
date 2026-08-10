@@ -48,15 +48,73 @@
 cp config.example.yaml config.local.yaml     # 已被 gitignore
 ```
 
-需要改的通常只有三行：
+需要改的通常是字典路徑與**索引宣告**：
 
 ```yaml
 dictionary_path: dictionary.local.yaml   # 你的機台 / 製程 / 缺陷字典
-index_path: .index/yedai.pkl
 log_dir: logs
+
+indexes:
+  library:
+    source: ./corpus/library
+    path: .index/library.pkl
+  heuristics:
+    source: ./corpus/heuristics
+    path: .index/heuristics.pkl
+    depends_on: [library]     # library 是實體字典來源
+    keep_identifiers: false   # 這一層的查詢裡識別碼是雜訊
+    default_mode: D
+    top_k: 5
+  cases:
+    source: ./corpus/cases
+    path: .index/cases.pkl
+    depends_on: [library]
 ```
 
 其餘參數的意義見 `config.example.yaml` 的註解，或 [data-flow.md](./data-flow.md#計分)。
+
+### 為什麼是多個索引，而不是一個索引加過濾條件
+
+每個索引持有**完全獨立**的詞彙與實體統計：`df`、`avg_field_len`、實體 idf 都不共用。
+
+混在一起時這些統計是全域的。持續累積的那一層（已結案）每長大一次，其他層的排名就
+漂移一次——**沒有任何變更、沒有任何測試會紅，檢索品質卻退化了**。查詢時加 `--bundle`
+之類的過濾解不了這件事：過濾只影響誰參與排序，碰不到 idf。
+
+實測的量級：同一份文件、同樣的查詢，在另一層灌入 60 篇之後，BM25 分數從 0.50
+掉到 0.027。文件本身一個字都沒改。
+
+這條性質有回歸測試釘著：`tests/test_layers.py::test_growing_one_index_does_not_move_another`。
+
+### 層要自己說明自己
+
+`description` 與 `when_to_use` 不是註解，是**執行期資料**：它們會出現在 `/v1/stats`，
+並且被組進 MCP `search` 工具的說明裡。工具說明是 agent 唯一的手冊——寫死一組例子
+在別人的部署上就是錯的提示，所以那段文字從設定生成。
+
+沒寫也能跑，但 agent 只能從索引名稱猜這層是什麼，而那是它最沒有把握的一種判斷。
+`/v1/stats` 的 `indexes_without_description` 會列出漏寫的層。
+
+`type` 幫不上忙：它是**每份文件**的類型（`case_investigation` / `meeting_minutes` /
+`spec_definition` …），與「這層是什麼」是兩個正交的軸——同一層裡通常什麼型都有。
+
+### 每層可以有自己的檢索設定
+
+| 鍵 | 用途 |
+|---|---|
+| `source` / `path` | 語料來源與索引檔輸出（必填） |
+| `description` | **這一層裝什麼。** 索引名稱是任意鍵，agent 只看得到那個字串 |
+| `when_to_use` | **什麼情況下該查這一層。** 與 description 分開：前者說「這是什麼」，後者說「你什麼時候需要它」 |
+| `collection` | 這一層的 qdrant collection。不宣告就沒有稠密腿，`D`/`E` 明確不可用 |
+| `depends_on` | 這一層的實體字典來自哪一層。決定重建順序 |
+| `keep_identifiers` | query 前處理。識別碼在案件層是主訊號，在敘述性語料是雜訊 |
+| `default_mode` / `top_k` | 這一層的預設模式與深度 |
+| `field_weights` / `entity_field_weights` | 覆寫全域欄位權重；未列出的欄位仍用全域值 |
+| `fusion_lexical` / `fusion_entity` / `require_entities` | 覆寫模式 C 的融合設定 |
+
+`keep_identifiers: false` 的差別在**計分之前**：查詢 `XTR-05 overlay` 進入該層時
+會變成 `overlay`。帶著機台編號去查「這類問題怎麼追」，比對到的是一個跟問題無關的
+字串。這也是為什麼分層不能退化成「同一個檢索器加過濾條件」——差異發生在過濾之前。
 
 ### 實體字典（選填但強烈建議）
 
@@ -138,13 +196,17 @@ entity_sources:
 ## 3. 建索引
 
 ```bash
-uv run yedai index /path/to/bundles -c config.local.yaml
+uv run yedai index -c config.local.yaml                 # 全部，依 depends_on 順序
+uv run yedai index -i cases -c config.local.yaml        # 只重建這一層
 ```
 
-輸出：
+**順序不是裝飾。** 上游是下游的實體字典來源，反過來建會讓下游用到舊字典——
+而那不會報錯，只會讓下游的實體腿對不上。
+
+每層各自輸出一份統計：
 
 ```
-            語料統計
+       語料統計 — 索引 cases
 ┌────────────────────────┬──────┐
 │ bundles                │   30 │
 │ concepts               │  729 │
@@ -271,9 +333,86 @@ uv run yedai check-formats -c config.local.yaml
 
 ---
 
+## 3b. taxonomy：一份刻意不進索引的資源
+
+```yaml
+taxonomy_path: taxonomy.local.yaml                    # defect → 判斷方法
+defect_catalogue_path: defects.catalogue.local.yaml   # defect 全集，覆蓋率的分母
+```
+
+`taxonomy` 是每個 defect 一條的**判斷方法**：看到這種形貌，該往哪些 module 查、
+依據什麼判準。取用方式是以 defect 為鍵取回那一條——`GET /v1/taxonomy/{defect}`，
+或 MCP 的 `taxonomy` 工具。
+
+### 為什麼它不是第四個索引
+
+因為存取模式不同。其他三層是「文件集合，回傳 top-k」；這個是「一張對照表，
+給我那一條」。
+
+放進倒排索引會有兩個後果。第一，呼叫端拿到的是「最像的幾列」而不是「那一條」，
+而且沒有任何訊號告訴它拿到的不是要的。第二，模型會拿著另一個 defect 的判斷方法
+去解讀影像——**那比沒有方法更糟**，因為錯誤的方法看起來跟正確的一樣有條理。
+
+所以查無條目一律回「無此條目」，不做任何近似比對。上游必須自己處理
+「這個 defect 還沒有整理過方法」，而那是它該知道的事實。
+
+### 條目是方法，不是答案
+
+```yaml
+DEFECT_ALPHA:
+  category: pattern
+  description: 這個 defect 在影像上長什麼樣（給看圖的模型當判斷依據）
+  method: 怎麼從影像推出候選 module。寫成判準與排除法，不要寫成結論
+  modules: [MODULE_ONE]   # 選填。多數條目只給方法不給清單
+  notes: 只在方法本身有例外或前提時才寫
+```
+
+`modules` 一旦寫死，模型就不再看圖了。多數條目應該只給 `method`。
+
+**方法的正確性無法靜態檢查**——一段判準寫得對不對，看它本身看不出來，只有用了
+才知道。驗證要靠歷史結案回放：拿已結案的前半跑一遍，看產出的候選有沒有命中結案裡
+工程師確認的 module。那是後續變更的範圍。
+
+### 覆蓋率是第一級指標
+
+taxonomy 是**部分填充**的：有些 defect 還沒整理過方法。`defect_catalogue_path`
+提供分母，覆蓋率因此看得見：
+
+```
+taxonomy: {covered: 42, total: 118, unknown_keys: 3, by_category: {...}}
+```
+
+沒有分母時 `total` 為 `null`——那時 `covered` 只說明整理了幾條，不說明還缺幾條。
+拿條目數當分母會讓覆蓋率恆為 1.0，也就是永遠看不見缺口。
+
+`unknown_keys` 是「條目指向清單裡沒有的 defect」。這種條目會被保留並發出警告，
+不會丟棄——它可能表示**清單缺漏**，而那本身是要處理的訊號。
+
+### 各層語料必須互斥
+
+同一個 `concept_id` 出現在兩層，不是「這份文件屬於兩類知識」，而是語料重複收錄了，
+或 id 產生方式沒有跨語料唯一。它造成的問題**全部是靜默的**：
+
+| 症狀 | 現在的行為 |
+|---|---|
+| 取全文取到哪一層 | 宣告順序的第一層。答案可能是錯的，但至少是穩定的 |
+| 批次取回 | 先歸屬再逐層取，不會回傳重複條目 |
+| 跨層融合 | 每個 concept 只以最好的名次計一次分，不因重複而加倍 |
+
+系統把行為壓成確定的，但**根因要修在語料端**。重複量在 `/v1/stats` 與 `yedai report`
+的 `id_overlap` 看得到；CLI 的 `search` 在載入時也會印警告。
+
+### 邊界
+
+defect shape → module 的對照就是 fab taxonomy，比識別碼樣式更敏感——樣式只洩漏形狀，
+這裡洩漏的是製程知識本身。repo 內只有 schema 與明顯是佔位符的範例；實際內容走
+`*.local.yaml`（已 gitignore）。
+
+---
+
 ## 4. 何時必須重建索引
 
-索引簽章 = `hash(欄位清單 + identifier_patterns + entity_field_weights + 字典指紋)`
+索引簽章 = `hash(欄位清單 + identifier_patterns + entity_field_weights + 字典指紋 + 索引名稱)`
 （`Config.index_signature`，`config.py`）。簽章不符時載入會直接報錯並要你重建。
 
 ### 必須重建
@@ -289,11 +428,20 @@ uv run yedai check-formats -c config.local.yaml
 | **改 `entity_sources` 指向的 CSV 內容** | 同上——字典指紋涵蓋 CSV 條目 |
 | 升級 `INDEX_FORMAT_VERSION` | 索引結構改變，舊檔會被拒絕 |
 
-目前的索引格式版本是 **7**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊，
+| **上游索引的內容變更** | 它是下游的字典來源；下游的實體抽取結果因此改變 |
+
+目前的索引格式版本是 **8**（v2 加入 `by_id` / `bundle_roots`，v3 加入關聯邊，
 v4 讓 `#` 成為識別碼的一部分並加入父子層級展開，v5 加入 op no / lot / wafer 樣式
 並讓 `#` 的父層可含 `-`，v6 修正作業序號的邊界與位數、移除 tech 樣式，
-v7 讓 regex fallback 的實體帶形狀決定的類型，實體鍵因此改變）。
-從舊版升上來時載入會被拒絕並提示重建，直接重跑 `yedai index` 即可。
+v7 讓 regex fallback 的實體帶形狀決定的類型，v8 讓索引攜帶所屬的具名索引、
+統計改為分層獨立）。從舊版升上來時載入會被拒絕並提示重建，直接重跑 `yedai index` 即可。
+
+**簽章納入索引名稱。** 索引檔被放到另一個索引宣告的路徑下時，載入會報錯而不是靜默
+採用——兩份統計互換之後檢索仍會回傳結果，只是分數全錯。
+
+**重建有依賴順序。** 上游（實體字典來源）重建後，下游會因簽章不符而過期。錯誤訊息
+會指名該重建哪些索引，而不是只說「請重建索引」——後者會讓你反覆重建同一個並困惑於
+它為什麼還是紅的。`yedai index` 不指定 `-i` 時自動依拓撲順序處理。
 
 `entity_sources` 的**路徑**本身不進簽章——字典指紋是由實際載入的條目算出來的，
 已經涵蓋 CSV 內容。換個檔名但內容相同不該白白失效一次索引。
@@ -340,8 +488,12 @@ v7 讓 regex fallback 的實體帶形狀決定的類型，實體鍵因此改變�
 
 | 訊息 | 原因與處置 |
 |---|---|
-| `index not found: … 請先執行 yedai index` | 還沒建索引，或 `index_path` 指錯 |
-| `索引快取與目前設定不相容（斷詞樣式或字典已變更）` | 簽章不符 → 重建 |
+| `index not found: … 請先執行 yedai index -i <名稱>` | 還沒建這一層，或 `indexes.<名稱>.path` 指錯 |
+| `… 的索引名稱是 'X'，但設定在這個路徑宣告的是 'Y'` | 兩層的 `path` 寫到同一個檔，或改名後沒重建 |
+| `索引 'X' 的快取與目前設定不相容` | 簽章不符 → 依訊息指名的順序重建（含下游） |
+| `設定未宣告任何索引` | `indexes` 是必填。不回退到預設路徑是刻意的——回退會讓你以為索引建好了 |
+| `設定鍵 index_path 已移除` | 舊設定。改成 `indexes` 宣告，不做自動轉換（舊設定沒有層的概念） |
+| `設定中有重複的鍵 'X'` | YAML 的重複鍵預設靜默保留最後一個，其中一個索引會無聲消失 |
 | `index format mismatch at … 請重建索引` | 索引格式版本升級 → 重建 |
 | `entity dictionary not found: …` | `dictionary_path` 路徑錯。留空可完全不用字典 |
 | `找不到 bundle 根目錄` | 路徑錯，或指到了單一 bundle 的 `okf/` 而非其上層 |
@@ -371,7 +523,7 @@ v7 讓 regex fallback 的實體帶形狀決定的類型，實體鍵因此改變�
 
 ```bash
 uv run yedai gen-synthetic .synthetic -n 30 -s 42
-uv run yedai index .synthetic -c config.local.yaml   # dictionary_path 指向 .synthetic/dictionary.yaml
+uv run yedai index -c config.local.yaml   # indexes.synthetic.source 指向 .synthetic/
 ```
 
 > ⚠️ 合成語料**僅供驗證程式跑得通**。詞頻分佈、識別碼密度、模板多樣性全是編造的，

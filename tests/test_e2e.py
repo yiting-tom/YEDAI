@@ -19,22 +19,23 @@ def test_full_pipeline_over_synthetic_corpus(tmp_path: Path) -> None:
     assert result["bundles"] == 3
     assert result["concepts"] > 0
 
+    index_path = tmp_path / ".index" / "e2e.pkl"
     config = Config(
         dictionary_path=result["dictionary"],
-        index_path=str(tmp_path / ".index" / "e2e.pkl"),
+        indexes={"e2e": {"source": str(out), "path": str(index_path)}},
         log_dir=str(tmp_path / "logs"),
         seed=3,
     )
     dictionary = EntityDictionary.load(config.dictionary_path)
 
-    index = build_index(out, config, dictionary)
+    index = build_index(out, config, dictionary, name="e2e")
     assert index.stats.parse_skipped == 0, f"合成語料不應有解析失敗：{index.skipped}"
     assert index.stats.concepts == result["concepts"]
 
     # 快取往返
-    saved = index.save(config.index_path)
-    reloaded = Index.load(saved)
-    reloaded.check_signature(config.index_signature(dictionary.fingerprint()))
+    saved = index.save(index_path)
+    reloaded = Index.load(saved, expect_name="e2e")
+    reloaded.check_signature(config.index_signature(dictionary.fingerprint(), "e2e"))
     assert reloaded.stats.concepts == index.stats.concepts
 
     searcher = Searcher(reloaded, config, dictionary)
@@ -66,13 +67,13 @@ def test_synthetic_chamber_gap_is_visible_in_the_coverage_metric(tmp_path: Path)
     result = generate(out, n_bundles=6, seed=42)
     config = Config(
         dictionary_path=result["dictionary"],
-        index_path=str(tmp_path / ".index" / "gap.pkl"),
+        indexes={"gap": {"source": str(out), "path": str(tmp_path / ".index" / "gap.pkl")}},
         log_dir=str(tmp_path / "logs"),
     )
-    index = build_index(out, config, EntityDictionary.load(config.dictionary_path))
-    report = build_report(index, TelemetryStore.create(config), config)
+    index = build_index(out, config, EntityDictionary.load(config.dictionary_path), name="gap")
+    report = build_report({"gap": index}, TelemetryStore.create(config), config)
 
-    chamber = report["entities"]["by_type"]["chamber_id"]
+    chamber = report["by_index"]["gap"]["entities"]["by_type"]["chamber_id"]
     assert chamber["regex"] > 0, "字典外的腔體必須計入 chamber_id，而不是掉進 unknown"
     assert chamber["dictionary_coverage"] == 0.5
 
@@ -129,3 +130,30 @@ def test_same_type_concepts_share_section_structure(tmp_path: Path) -> None:
         if len(groups) < 2:
             continue
         assert groups[0] == groups[1], f"{ctype} 的區段結構應在同類型間重複"
+
+
+def test_different_seeds_produce_disjoint_concept_ids(tmp_path: Path) -> None:
+    """不同種子的合成語料，concept_id 不得相撞。
+
+    端對端跑出來的迴歸點：id 原本由 `bundle_slug + 序號` 完全決定，與種子無關，
+    於是兩份獨立產生的語料大量共用 id（實測 8-deck 與 12-deck 之間 156 個相同）。
+
+    單一語料時代看不出來。分層之後兩份語料會同時載入，相撞的後果是取全文取到
+    錯的那一層、批次取回出現重複、跨層融合對同一份文件重複加權——全部靜默。
+    """
+    import re
+
+    def ids(root: Path) -> set[str]:
+        return {
+            m.group(1)
+            for f in root.rglob("*.md")
+            for m in re.finditer(r"^id: ((?:cpt|sum|bdl)_\w+)", f.read_text(encoding="utf-8"), re.M)
+        }
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    generate(a, n_bundles=4, seed=11)
+    generate(b, n_bundles=6, seed=22)
+
+    ia, ib = ids(a), ids(b)
+    assert ia and ib, "前提不成立：沒有抓到任何 id"
+    assert not (ia & ib), f"不同種子的語料共用了 {len(ia & ib)} 個 id"

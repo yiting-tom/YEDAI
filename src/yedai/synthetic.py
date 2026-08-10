@@ -136,7 +136,9 @@ def _figures(rng: random.Random, n: int) -> list[dict]:
     return out
 
 
-def _concept_markdown(rng: random.Random, cid: str, ctype: str, idx: int, bundle_slug: str) -> tuple[str, str, str]:
+def _concept_markdown(
+    rng: random.Random, cid: str, ctype: str, idx: int, bundle_slug: str, ns: str = ""
+) -> tuple[str, str, str]:
     headings = TEMPLATES[ctype]
     tool = rng.choice(TOOLS)
     defect = rng.choice(DEFECTS)
@@ -174,7 +176,7 @@ def _concept_markdown(rng: random.Random, cid: str, ctype: str, idx: int, bundle
         "resource": f"file://{src}#slide={','.join(str(n) for n in slides)}",
         "provenance": f"file://{src}#slide={','.join(str(n) for n in slides)}",
         "tags": rng.sample([defect.lower(), tool.lower(), "yield", "defect", "review", "training"], 3),
-        "related": [f"cpt_{_hash(f'{bundle_slug}{max(1, idx - 1)}')[:12]}"],
+        "related": [f"cpt_{_hash(f'{ns}{bundle_slug}{max(1, idx - 1)}')[:12]}"],
         "model": "synthetic-generator-0.1",
         "timestamp": (
             datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=rng.randint(0, 540))
@@ -187,16 +189,18 @@ def _concept_markdown(rng: random.Random, cid: str, ctype: str, idx: int, bundle
     return f"---\n{fm}---\n\n{body}", slug, description
 
 
-def _summary_markdown(rng: random.Random, bundle_slug: str, concept_ids: list[str]) -> str:
+def _summary_markdown(
+    rng: random.Random, bundle_slug: str, concept_ids: list[str], ns: str = ""
+) -> str:
     """刻意採用**無 `---` 分隔線**的 frontmatter，以覆蓋解析器的該條路徑。"""
     fm = {
-        "id": f"sum_{_hash(bundle_slug)[:12]}",
+        "id": f"sum_{_hash(ns + bundle_slug)[:12]}",
         "type": "bundle_summary",
         "title": f"{bundle_slug} 摘要",
         "slug": f"{bundle_slug}-summary",
         "description": f"{bundle_slug} 的整體摘要與涵蓋範圍。",
         "generated": True,
-        "content_hash": _hash(bundle_slug),
+        "content_hash": _hash(ns + bundle_slug),
         "confidence": rng.choice(["high", "low"]),
         "resource": f"derived://{bundle_slug}.pptx",
         "provenance": [f"file://{bundle_slug}.pptx"],
@@ -231,6 +235,12 @@ def generate(out_dir: str | Path, n_bundles: int = 30, seed: int = 42) -> dict:
     rng = random.Random(seed)
     total_concepts = 0
 
+    # 識別碼加入種子這一維。少了它，`bundle_slug + 序號` 完全決定 concept_id——
+    # 兩份不同種子產生的語料因此大量相撞（實測 8-deck 與 12-deck 之間 156 個 id 相同）。
+    # 單一語料時代看不出來；分層之後兩份語料會同時載入，相撞的後果是取全文取到
+    # 錯的那一層、跨層融合對同一份文件重複加權——而兩者都不會報錯。
+    ns = f"s{seed}-"
+
     for bi in range(n_bundles):
         bundle_slug = f"yed-deck-{bi + 1:03d}"
         broot = out / bundle_slug
@@ -246,17 +256,17 @@ def generate(out_dir: str | Path, n_bundles: int = 30, seed: int = 42) -> dict:
         entries: list[tuple[str, str, str, str]] = []
 
         for ci in range(1, n_concepts + 1):
-            cid = f"cpt_{_hash(f'{bundle_slug}{ci}')[:12]}"
+            cid = f"cpt_{_hash(f'{ns}{bundle_slug}{ci}')[:12]}"
             # 少量混入其他模板，避免語料完全同質
             this_type = ctype if rng.random() < 0.85 else rng.choice(list(TEMPLATES))
-            text, slug, desc = _concept_markdown(rng, cid, this_type, ci, bundle_slug)
+            text, slug, desc = _concept_markdown(rng, cid, this_type, ci, bundle_slug, ns)
             fname = f"{slug}.md"
             (okf / fname).write_text(text, encoding="utf-8")
             entries.append((cid, this_type, fname, desc))
             total_concepts += 1
 
         (okf / "summary.md").write_text(
-            _summary_markdown(rng, bundle_slug, [e[0] for e in entries]), encoding="utf-8"
+            _summary_markdown(rng, bundle_slug, [e[0] for e in entries], ns), encoding="utf-8"
         )
         (okf / "log.md").write_text(
             "# 轉換紀錄\n\n"
@@ -276,7 +286,7 @@ def generate(out_dir: str | Path, n_bundles: int = 30, seed: int = 42) -> dict:
         (broot / "manifest.json").write_text(
             json.dumps(
                 {
-                    "id": f"bdl_{_hash(bundle_slug)[:12]}",
+                    "id": f"bdl_{_hash(ns + bundle_slug)[:12]}",
                     "name": bundle_slug,
                     "source_file": f"{bundle_slug}.pptx",
                     "doc_type": ctype,

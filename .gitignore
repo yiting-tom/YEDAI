@@ -33,12 +33,21 @@ dictionary.local.yaml
 # 識別碼格式樣本。樣本就是真實識別碼，同上。
 *-samples.local.yaml
 
+# taxonomy 判斷方法與 defect / module 清單。
+# defect shape → module 的對照本身就是 fab taxonomy，比識別碼樣式更敏感——
+# 樣式只洩漏形狀，這裡洩漏的是製程知識本身。repo 內只留 schema 與範例。
+*.local.yaml
+
 # OS
 .DS_Store
 
-# 瀏覽器自動化測試產物
+# 瀏覽器自動化測試產物。截圖是拿本機服務跑出來的，會隨語料一起變動——
+# 進版控只會得到一張永遠對不上現況的圖。
 .playwright-mcp/
-docs-e2e.png
+docs-*.png
+
+# CodeGraph 本機索引。內容是這台機器上的原始碼衍生物，不是專案資產。
+.codegraph/
 
 # Claude Code 本機設定
 .claude/settings.local.json

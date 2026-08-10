@@ -195,8 +195,9 @@ def _report(config: Config, corpus: Path):
     from yedai.index import build_index
     from yedai.telemetry import TelemetryStore
 
-    index = build_index(corpus, config, EntityDictionary.load(config.dictionary_path))
-    return build_report(index, TelemetryStore.create(config), config)
+    index = build_index(corpus, config, EntityDictionary.load(config.dictionary_path), name="main")
+    # 依索引拆解是報告的主要視角；這裡只有一層，直接取它。
+    return build_report({"main": index}, TelemetryStore.create(config), config)["by_index"]["main"]
 
 
 def test_ratio_is_null_when_the_denominator_is_not_measurable(config, corpus: Path) -> None:

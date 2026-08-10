@@ -23,6 +23,41 @@ class EmbeddingError(RuntimeError):
     pass
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """把 `.env` 讀進環境變數。已存在的變數不覆蓋——explicit export 應該贏過檔案。
+
+    放在這裡而不是 CLI：HTTP 與 MCP 也要建 embedder，而金鑰只從環境變數讀。
+    留在 CLI 的話，走 API 起服務時金鑰會神秘地讀不到。
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def build_embedder(cfg) -> "CachedEmbedder":
+    """由設定建立帶快取的 embedder。所有入口一律走這裡。
+
+    分成兩個入口的話，其中一邊遲早會忘記包快取，而症狀是「同一組查詢重跑要再付一次費」。
+    """
+    load_dotenv()
+    e = cfg.embedding
+    client = HttpEmbeddingClient(
+        base_url=e["base_url"],
+        model=e["model"],
+        dim=int(e["dim"]),
+        api_key_env=e["api_key_env"],
+        batch_size=int(e.get("batch_size", 32)),
+        timeout=float(e.get("timeout", 60.0)),
+        max_retries=int(e.get("max_retries", 4)),
+    )
+    return CachedEmbedder(client, e.get("cache_dir"))
+
+
 class EmbeddingClient(Protocol):
     """讓測試能離線替換。測試觸網會同時變慢、變不穩、變貴，最後的下場是被跳過。"""
 

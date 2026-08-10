@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .conftest import INDEX_NAME
+
 import json
 
 import pytest
@@ -78,13 +80,38 @@ def test_report_leaks_no_corpus_content(searcher, config) -> None:
             assert doc.description not in blob
 
     # 依類型拆解的結構只能有類型名稱（schema），不能有正規名稱（語料內容）
-    by_type = report["entities"]["by_type"]
+    by_type = report["by_index"][INDEX_NAME]["entities"]["by_type"]
     assert by_type, "拆解結構不該是空的，否則這條斷言等於沒測"
     for etype in by_type:
         assert ":" not in etype, f"類型鍵疑似夾帶了正規名稱：{etype!r}"
     for key in searcher.index.entities.postings:
         canonical = key.split(":", 1)[1] if ":" in key else key
         assert canonical not in by_type
+
+    # 索引名稱是唯一允許的識別，而它來自設定宣告——不得由語料內容衍生
+    assert list(report["by_index"]) == [INDEX_NAME]
+
+
+def test_report_index_keys_are_declared_names_not_corpus(searcher, config) -> None:
+    """依索引拆解引入了新的鍵，那組鍵必須是 schema 而不是語料。
+
+    taxonomy 覆蓋率同理：只以 defect 類別為鍵，defect 名稱與條目文字都不得出現。
+    """
+    from yedai.taxonomy import Taxonomy
+
+    tx = Taxonomy.load(None, defects={"DEFECT_SECRET": "pattern"})
+    report = build_report({INDEX_NAME: searcher.index}, TelemetryStore.create(config), config,
+                          taxonomy=tx)
+    blob = json.dumps(report, ensure_ascii=False)
+
+    assert "DEFECT_SECRET" not in blob, "defect 名稱屬語料內容，不得進報告"
+    assert report["taxonomy"]["total"] == 1
+    assert report["taxonomy"]["covered"] == 0
+    assert list(report["taxonomy"]["by_category"]) == ["pattern"]
+
+    # bundle 名稱來自語料，索引名稱來自設定——只有後者可以出現
+    for doc in searcher.index.docs:
+        assert doc.bundle_id not in report["by_index"]
 
 
 def test_report_contains_required_metrics(searcher, config) -> None:
@@ -93,17 +120,21 @@ def test_report_contains_required_metrics(searcher, config) -> None:
 
     report = build_report(searcher.index, store, config)
 
-    assert report["corpus"]["concepts"] > 0
-    assert report["corpus"]["vocab_naive"] > 0
-    assert report["corpus"]["vocab_protected"] > 0
-    assert report["entities"]["distinct_entities"] > 0
-    assert report["entities"]["dictionary_coverage"] is not None
+    layer = report["by_index"][INDEX_NAME]
+    assert layer["corpus"]["concepts"] > 0
+    assert layer["corpus"]["vocab_naive"] > 0
+    assert layer["corpus"]["vocab_protected"] > 0
+    assert layer["entities"]["distinct_entities"] > 0
+    assert layer["entities"]["dictionary_coverage"] is not None
+    # 彙總只含加得起來的量——詞彙量重疊程度未知，相加會系統性高估
+    assert report["corpus"]["concepts"] == layer["corpus"]["concepts"]
+    assert "vocab_naive" not in report["corpus"]
     # 全域數字無法解讀——字典對一般詞是「有或沒有」，對識別碼只是精確度差異
-    by_type = report["entities"]["by_type"]
+    by_type = layer["entities"]["by_type"]
     assert by_type
     for counts in by_type.values():
         assert counts["dict"] + counts["regex"] <= counts["total"]
-    assert sum(c["total"] for c in by_type.values()) == report["entities"]["distinct_entities"]
+    assert sum(c["total"] for c in by_type.values()) == layer["entities"]["distinct_entities"]
     assert "query_entity_by_type" in report["queries"]
     assert report["queries"]["total_queries"] == 1
     assert set(report["mode_overlap"]) == {"A-B", "A-C", "B-C"}
@@ -127,7 +158,7 @@ def test_report_keeps_every_pair_the_search_produced(corpus, config) -> None:
     from yedai.vectors import VectorStore
 
     dictionary = EntityDictionary.load(config.dictionary_path)
-    index = build_index(corpus, config, dictionary)
+    index = build_index(corpus, config, dictionary, name=INDEX_NAME)
     embedder = FakeEmbedder()
     store_v = VectorStore(dim=embedder.dim, path=None)
     store_v.ensure_collection()
@@ -151,6 +182,7 @@ def test_report_works_with_no_queries(searcher, config) -> None:
 
     assert report["queries"]["total_queries"] == 0
     assert report["corpus"]["concepts"] > 0
+    assert report["by_index"][INDEX_NAME]["corpus"]["concepts"] > 0
     assert report["feedback"]["total"] == 0
 
 

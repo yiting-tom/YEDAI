@@ -61,17 +61,26 @@ class VectorHit:
     score: float
 
 
-class VectorStore:
+class VectorBackend:
+    """一個儲存位置一個 client。**collection 是查詢參數，不是 client 參數。**
+
+    本機檔案模式的 qdrant 對儲存資料夾持有獨佔鎖。分層之後每個索引各自宣告
+    collection，若照著各開一個 client，第二個有向量的層會讓整個載入直接炸掉：
+
+        RuntimeError: Storage folder … is already accessed by another instance
+
+    症狀是「跑過 embed 的層一旦超過一個，服務就起不來」，而且錯誤訊息指向 qdrant，
+    不指向設定。一個 client 服務全部 collection 才是對的形狀。
+
+    跨**程序**的併發仍然不行（那是本機模式的固有限制，要併發就得起 qdrant 服務）。
+    """
+
     def __init__(
         self,
-        dim: int,
         path: Path | str | None = None,
         url: str | None = None,
-        collection: str = "yedai",
         api_key: str | None = None,
     ) -> None:
-        self.dim = dim
-        self.collection = collection
         if url:
             self.client = QdrantClient(url=url, api_key=api_key)
         elif path is None:
@@ -79,6 +88,36 @@ class VectorStore:
         else:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             self.client = QdrantClient(path=str(path))
+
+    def store(self, dim: int, collection: str) -> VectorStore:
+        """取得該 collection 的操作介面。共用本 backend 的 client。"""
+        return VectorStore(dim=dim, collection=collection, backend=self)
+
+    def close(self) -> None:
+        self.client.close()
+
+
+class VectorStore:
+    """單一 collection 的操作介面。
+
+    `backend` 給定時共用它的 client，`close()` 不會關掉共用的連線——
+    關掉別人還在用的 client，症狀會是另一層的檢索突然開始丟例外。
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        path: Path | str | None = None,
+        url: str | None = None,
+        collection: str = "yedai",
+        api_key: str | None = None,
+        backend: VectorBackend | None = None,
+    ) -> None:
+        self.dim = dim
+        self.collection = collection
+        self._owns_client = backend is None
+        self.backend = backend or VectorBackend(path=path, url=url, api_key=api_key)
+        self.client = self.backend.client
 
     def ensure_collection(self) -> None:
         """維度不符的既有集合必須重建，不能沿用。
@@ -130,4 +169,7 @@ class VectorStore:
             return False
 
     def close(self) -> None:
-        self.client.close()
+        """只關掉自己開的 client。共用的 backend 由它的擁有者負責關——
+        關掉別人還在用的連線，症狀會是另一層的檢索突然開始丟例外。"""
+        if self._owns_client:
+            self.backend.close()
