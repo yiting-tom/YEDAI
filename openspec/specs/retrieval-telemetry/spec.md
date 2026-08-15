@@ -7,6 +7,8 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 系統 SHALL 將每次查詢以 JSONL 格式追加寫入本機完整日誌，內容含查詢識別碼、時間戳、查詢原文、使用模式、抽出的實體、各模式的結果 concept id 與分數、結果筆數。此日誌 MUST 寫入預設被版控排除的目錄。
 
+日誌 MUST 記錄該次檢索觸及的索引名稱、每個索引各自的結果與分數，以及該次是分層回傳或跨索引融合。查詢送入各索引前若經過前處理，處理後的查詢詞 MUST 一併記錄——否則無法還原「這一層實際上拿到了什麼」。
+
 #### Scenario: 查詢被記錄
 
 - **WHEN** 使用者執行一次查詢
@@ -21,6 +23,21 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 查詢被記錄
 - **THEN** 回傳結果含查詢識別碼，可供後續回饋事件關聯
+
+#### Scenario: 記錄各層結果
+
+- **WHEN** 執行分層檢索
+- **THEN** 日誌記錄每個索引名稱與其各自的結果 id 與分數
+
+#### Scenario: 記錄前處理後的查詢詞
+
+- **WHEN** 某索引宣告剝除識別碼的 query 前處理
+- **THEN** 日誌記錄該索引實際收到的查詢詞，與原始查詢字串可區分
+
+#### Scenario: 記錄回傳形態
+
+- **WHEN** 執行一次檢索
+- **THEN** 日誌標示該次為分層回傳或跨索引融合
 
 ### Requirement: 點選回饋記錄
 
@@ -54,12 +71,20 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 去識別化報告 SHALL 至少包含下列指標：語料統計（bundle 數、concept 數、平均 concept 長度、兩套詞彙空間的詞彙量、解析失敗檔數）、查詢統計（查詢次數、查詢長度分佈、含實體查詢比例、零結果率）、實體統計（不重複實體數、字典命中與 regex fallback 比例，**以及依實體類型拆解的同一組比例**）、各模式分數分佈、模式間 top-k 重疊度（Jaccard 與 Kendall tau 的分佈）、點選排名分佈，以及該次實驗使用的設定參數。
 
+語料統計、實體統計、各模式分數分佈與零結果率 MUST 依索引拆解，並以索引名稱為鍵。全域彙總數字 MAY 保留，但 MUST NOT 是唯一視角——不同索引的語料規模可能相差數個數量級，彙總會把它們平均掉。
+
+報告 MUST 含 taxonomy 覆蓋率：有條目的 defect 數、defect 總數，以及依 defect 類別拆解的同一組數字。
+
+報告 MUST 可區分該次檢索是分層回傳或跨索引融合。兩者的重疊度與排名分佈 MUST NOT 混入同一組統計。
+
 依類型拆解的實體統計 MUST 僅以實體類型名稱為鍵。實體的正規名稱與原始字串 MUST NOT 出現在報告任何位置——類型名稱屬 schema，正規名稱屬語料內容，後者會使報告無法帶出受管制環境。
+
+索引名稱 MUST 為 schema 層級的識別（如 `heuristics`、`cases`、`library`），MUST NOT 由語料內容衍生。defect 名稱、module 名稱與 taxonomy 條目內容 MUST NOT 出現在報告任何位置。
 
 #### Scenario: 含模式間重疊度
 
-- **WHEN** 累積若干次三模式並排查詢後產出報告
-- **THEN** 報告含 A 對 B、A 對 C、B 對 C 的 top-k Jaccard 與 Kendall tau 統計量
+- **WHEN** 累積若干次多模式並排查詢後產出報告
+- **THEN** 報告含各模式兩兩配對的 top-k Jaccard 與 Kendall tau 統計量
 
 #### Scenario: 含設定參數
 
@@ -71,10 +96,30 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 - **WHEN** 若干次查詢中有部分無命中
 - **THEN** 報告含各模式的零結果比例
 
+#### Scenario: 依索引拆解統計
+
+- **WHEN** 系統宣告多個索引且皆有查詢紀錄
+- **THEN** 報告可分別讀取各索引的語料統計、實體統計、分數分佈與零結果率
+
+#### Scenario: 空層計入零結果
+
+- **WHEN** 分層檢索中某層無命中
+- **THEN** 該層的零結果計數增加，其他層不受影響
+
+#### Scenario: 含 taxonomy 覆蓋率
+
+- **WHEN** 產出報告
+- **THEN** 報告含有條目的 defect 數、defect 總數，以及依 defect 類別拆解的同一組數字
+
+#### Scenario: 分層與融合的統計分開
+
+- **WHEN** 累積的查詢中同時有分層回傳與跨索引融合兩種
+- **THEN** 兩者的重疊度與排名分佈分別記錄，可個別讀取
+
 #### Scenario: 無查詢紀錄時
 
 - **WHEN** 尚未有任何查詢即產出報告
-- **THEN** 報告仍含語料統計，查詢相關指標為零或空，且不產生錯誤
+- **THEN** 報告仍含各索引的語料統計，查詢相關指標為零或空，且不產生錯誤
 
 #### Scenario: 含依類型拆解的實體覆蓋率
 
@@ -85,6 +130,11 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 產出含依類型拆解的報告
 - **THEN** 報告序列化結果中不出現任何實體的正規名稱或原始字串
+
+#### Scenario: 索引拆解不洩漏語料內容
+
+- **WHEN** 產出依索引拆解的報告
+- **THEN** 報告中的索引名稱皆為設定宣告的 schema 識別，且不出現 defect 名稱、module 名稱或 taxonomy 條目文字
 
 ### Requirement: 三模式並排時隨機化呈現順序
 
@@ -99,4 +149,18 @@ TBD - created by archiving change okf-keyword-baseline. Update Purpose after arc
 
 - **WHEN** 設定指定固定隨機種子
 - **THEN** 呈現順序可重現
+
+### Requirement: 點選回饋標示來源索引
+
+點選回饋 SHALL 額外記錄被點選項目所屬的索引名稱。分層回傳時，排名 MUST 為該項目在其所屬層內的名次，不得使用跨層的合併名次。
+
+#### Scenario: 回饋含索引名稱
+
+- **WHEN** 使用者點選分層結果中某一層排名第 3 的項目
+- **THEN** 系統記錄該事件含索引名稱與層內排名 3
+
+#### Scenario: 層內排名而非跨層排名
+
+- **WHEN** 分層結果中第二層的第 1 筆被點選
+- **THEN** 記錄的排名為 1，而非該項目在全部層合併後的位置
 
