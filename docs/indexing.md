@@ -522,9 +522,14 @@ v7 讓 regex fallback 的實體帶形狀決定的類型，v8 讓索引攜帶所�
 ## 7. 沒有真實語料時
 
 ```bash
-uv run yedai gen-synthetic .synthetic -n 30 -s 42
-uv run yedai index -c config.local.yaml   # indexes.synthetic.source 指向 .synthetic/
+uv run yedai gen-synthetic .synthetic -n 10 -s 42
+uv run yedai index -c .synthetic/config.yaml   # 產出的設定已指向三層語料與全部查表資源
 ```
+
+產出的是分層資料集：`corpus/library`、`corpus/heuristics`、`corpus/cases` 三層，
+外加字典、兩份 CSV 實體來源、taxonomy、defect 全集與識別碼樣本。`-n` 是每層的
+bundle 數。設定裡的路徑是絕對路徑——設定載入器把相對路徑接到**工作目錄**而非設定檔
+所在目錄，寫相對路徑的話這份設定只有從輸出目錄執行才成立。
 
 > ⚠️ 合成語料**僅供驗證程式跑得通**。詞頻分佈、識別碼密度、模板多樣性全是編造的，
 > **不得用於調整任何參數，也不得用於推論任何檢索效果數字。**

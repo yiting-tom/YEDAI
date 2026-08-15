@@ -450,8 +450,31 @@ curl "$B/v1/concept/$CID" | jq -r '.assets[]' \
 開發者無法取得真實語料（公司機密），因此附一份格式相符的合成產生器供程式驗證：
 
 ```bash
-uv run yedai gen-synthetic .synthetic -n 30 -s 42
+uv run yedai gen-synthetic .synthetic -n 10 -s 42
+uv run yedai index -c .synthetic/config.yaml    # 三層一次建好
+uv run yedai search "XTR-05 PARTICLE" -c .synthetic/config.yaml
 ```
+
+產出的是一份**分層**資料集，每一種輸入都有：
+
+```
+.synthetic/
+  config.yaml                 # 指向以下全部，可直接使用
+  corpus/library/             # 每個 defect 一條，識別碼稀少
+  corpus/heuristics/          # 自由文字、段落長，識別碼稀少
+  corpus/cases/               # 固定格式，識別碼密集
+  dictionary.yaml             # YAML 實體字典
+  tools.csv                   # CSV 實體來源（id_only，含 `#` 層級列）
+  defects.csv                 # CSV 實體來源（module_code_name）
+  taxonomy.yaml               # defect → 判斷方法（不進索引）
+  defects.catalogue.yaml      # defect 全集，覆蓋率的分母
+  identifier-samples.yaml     # check-formats 的輸入
+```
+
+`-n` 是**每層**的 bundle 數；登錄層例外，它的內容由 defect 全集決定。
+三層的文本長度與識別碼密度刻意不同——三層長得一樣時，統計隔離與 query 前處理
+的效果在這份資料上就無法被觀察到。taxonomy 也刻意留有缺口，否則覆蓋率恆為滿，
+那個指標就只能驗證自己不會爆炸。
 
 > ⚠️ **合成資料僅供驗證程式正確性。**
 > 它的詞頻分佈、識別碼密度、模板多樣性都是編造的，

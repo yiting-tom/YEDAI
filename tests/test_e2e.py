@@ -1,4 +1,7 @@
-"""端到端：合成語料 → 索引 → 三模式查詢 → 回饋 → 報告。"""
+"""端到端：合成語料 → 索引 → 三模式查詢 → 回饋 → 報告。
+
+語料是分層的，這裡取識別碼密集的那一層——三模式的分野幾乎完全由識別碼決定，
+拿剝除識別碼的那一層來跑，A/B/C 會看起來沒有差別。"""
 
 from __future__ import annotations
 
@@ -16,21 +19,22 @@ from yedai.telemetry import TelemetryStore, build_report
 def test_full_pipeline_over_synthetic_corpus(tmp_path: Path) -> None:
     out = tmp_path / "synthetic"
     result = generate(out, n_bundles=3, seed=42)
-    assert result["bundles"] == 3
+    assert result["layers"]["cases"]["bundles"] == 3
     assert result["concepts"] > 0
+    corpus = Path(result["layers"]["cases"]["source"])
 
     index_path = tmp_path / ".index" / "e2e.pkl"
     config = Config(
         dictionary_path=result["dictionary"],
-        indexes={"e2e": {"source": str(out), "path": str(index_path)}},
+        indexes={"e2e": {"source": str(corpus), "path": str(index_path)}},
         log_dir=str(tmp_path / "logs"),
         seed=3,
     )
     dictionary = EntityDictionary.load(config.dictionary_path)
 
-    index = build_index(out, config, dictionary, name="e2e")
+    index = build_index(corpus, config, dictionary, name="e2e")
     assert index.stats.parse_skipped == 0, f"合成語料不應有解析失敗：{index.skipped}"
-    assert index.stats.concepts == result["concepts"]
+    assert index.stats.concepts == result["layers"]["cases"]["concepts"]
 
     # 快取往返
     saved = index.save(index_path)
@@ -65,12 +69,13 @@ def test_synthetic_chamber_gap_is_visible_in_the_coverage_metric(tmp_path: Path)
     """
     out = tmp_path / "s"
     result = generate(out, n_bundles=6, seed=42)
+    corpus = Path(result["layers"]["cases"]["source"])
     config = Config(
         dictionary_path=result["dictionary"],
-        indexes={"gap": {"source": str(out), "path": str(tmp_path / ".index" / "gap.pkl")}},
+        indexes={"gap": {"source": str(corpus), "path": str(tmp_path / ".index" / "gap.pkl")}},
         log_dir=str(tmp_path / "logs"),
     )
-    index = build_index(out, config, EntityDictionary.load(config.dictionary_path), name="gap")
+    index = build_index(corpus, config, EntityDictionary.load(config.dictionary_path), name="gap")
     report = build_report({"gap": index}, TelemetryStore.create(config), config)
 
     chamber = report["by_index"]["gap"]["entities"]["by_type"]["chamber_id"]
@@ -88,7 +93,11 @@ def test_synthetic_output_is_reproducible(tmp_path: Path) -> None:
     files_b = sorted(p.relative_to(b) for p in b.rglob("*") if p.is_file())
     assert files_a == files_b
     for rel in files_a:
-        assert (a / rel).read_bytes() == (b / rel).read_bytes(), f"{rel} 不可重現"
+        # 產出的設定寫的是絕對路徑（載入器把相對路徑接到工作目錄，不是設定檔所在目錄），
+        # 所以比對前要把各自的輸出根目錄正規化掉——差在根目錄不算不可重現。
+        left = (a / rel).read_bytes().replace(str(a).encode(), b"<ROOT>")
+        right = (b / rel).read_bytes().replace(str(b).encode(), b"<ROOT>")
+        assert left == right, f"{rel} 不可重現"
 
 
 def test_synthetic_summary_uses_undelimited_frontmatter(tmp_path: Path) -> None:
@@ -115,10 +124,10 @@ def test_synthetic_ships_disclaimer(tmp_path: Path) -> None:
 
 def test_same_type_concepts_share_section_structure(tmp_path: Path) -> None:
     out = tmp_path / "s"
-    generate(out, n_bundles=2, seed=5)
+    result = generate(out, n_bundles=2, seed=5)
     from yedai.parser import load_bundles
 
-    bundles, _ = load_bundles(out)
+    bundles, _ = load_bundles(Path(result["layers"]["cases"]["source"]))
     by_type: dict[str, list[list[str]]] = {}
     for bundle in bundles:
         for concept in bundle.concepts:

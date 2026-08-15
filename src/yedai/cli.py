@@ -730,10 +730,16 @@ def gen_queries(
 @app.command("gen-synthetic")
 def gen_synthetic(
     out: Path = typer.Argument(..., help="輸出目錄"),
-    bundles: int = typer.Option(30, "--bundles", "-n", help="bundle 數量"),
+    bundles: int = typer.Option(
+        10, "--bundles", "-n", help="每層的 bundle 數（登錄層例外：內容由 defect 全集決定）"
+    ),
     seed: int = typer.Option(42, "--seed", "-s", help="隨機種子"),
 ) -> None:
-    """產生合成 OKF bundle（僅供驗證程式正確性，不得用於調參或推論效果）。"""
+    """產生分層合成資料集（僅供驗證程式正確性，不得用於調參或推論效果）。
+
+    產出語料、字典、CSV 實體來源、taxonomy、defect 全集、識別碼樣本，
+    以及一份指向以上全部的設定：`yedai index -c <輸出目錄>/config.yaml`。
+    """
     from .synthetic import DISCLAIMER, generate
 
     with console.status("產生合成語料中…"):
